@@ -733,7 +733,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         col1, col2 = st.columns(2)
         with col1:
             st.write("**Transaction Types:**")
-            for trans_type, count in transaction_type_counts.items():
+            for trans_type, count in category_counts.items():
                 if trans_type == 'Credit':
                     st.write(f"🟢 **{trans_type}:** {count} transactions")
                 else:
