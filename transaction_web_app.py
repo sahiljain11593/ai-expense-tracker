@@ -590,9 +590,10 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         except Exception as e:
             st.error(f"Error processing file: {e}")
             return
-        st.success(f"Loaded {len(df)} transactions.")
-        # MoneyMgr Proven Categorization System (Based on 3,943+ real transactions)
-        rules = {
+        # Show loading animation during processing
+        with st.spinner("🔄 Processing transactions and applying smart categorization..."):
+            # MoneyMgr Proven Categorization System (Based on 3,943+ real transactions)
+            rules = {
             "Food": [
                 # Groceries and Food Stores
                 "ローソン", "セブンイレブン", "ファミリーマート", "コンビニ", "lawson", "seven eleven", "family mart",
@@ -696,6 +697,9 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             # Fallback to basic categorization
             df_cat = categorise_transactions(df, rules, subcategories)
         
+        # Close the loading spinner
+        st.success(f"✅ Successfully processed {len(df)} transactions!")
+        
         # Smart categorization interface
         st.subheader("🎯 Smart Transaction Categorization")
         
@@ -709,16 +713,21 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         # Show categorization statistics
         category_counts = df_cat['transaction_type'].value_counts()
         
-        # Show confidence statistics if available
+        # Show categorization summary in a clean format
         if 'confidence' in df_cat.columns:
             avg_confidence = df_cat['confidence'].mean()
             high_confidence = len(df_cat[df_cat['confidence'] >= 0.8])
             low_confidence = len(df_cat[df_cat['confidence'] < 0.5])
             
-            st.info(f"📊 **Categorization Summary:** {len(df_cat)} total transactions")
-            st.info(f"🎯 **Confidence:** Average {avg_confidence:.1%} | High ({high_confidence}) | Low ({low_confidence})")
+            # Clean summary display
+            st.markdown(f"""
+            ### 📊 Categorization Summary
+            **Total Transactions:** {len(df_cat)}  
+            **Average Confidence:** {avg_confidence:.1%}  
+            **High Confidence:** {high_confidence} | **Low Confidence:** {low_confidence}
+            """)
         else:
-            st.info(f"📊 **Categorization Summary:** {len(df_cat)} total transactions")
+            st.markdown(f"### 📊 Categorization Summary\n**Total Transactions:** {len(df_cat)}")
         
         # Display transaction type breakdown
         col1, col2 = st.columns(2)
@@ -888,7 +897,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     
                     # Show learning feedback
                     if learning_system:
-                        st.info("🧠 Smart Learning System has learned from your corrections!")
+                        st.success("🧠 Smart Learning System has learned from your corrections!")
         
         # Show the final categorized data
         st.subheader("📋 Review All Transactions")
