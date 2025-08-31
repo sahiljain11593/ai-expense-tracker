@@ -321,22 +321,53 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
     df_result = pd.DataFrame(transactions)
     return df_result
 def categorise_transactions(
-    df: pd.DataFrame, rules: Dict[str, List[str]], uncategorised_label: str = "Uncategorised"
+    df: pd.DataFrame, rules: Dict[str, List[str]], subcategories: Dict[str, Dict[str, List[str]]] = None, 
+    uncategorised_label: str = "Uncategorised"
 ) -> pd.DataFrame:
-    patterns = {cat: re.compile("(" + "|".join(map(re.escape, kws)) + ")", 
-re.IGNORECASE) for cat, kws in rules.items()}
-    categories: List[str] = []
+    """Enhanced categorization with support for main categories and subcategories."""
+    
+    # Create patterns for main categories
+    patterns = {cat: re.compile("(" + "|".join(map(re.escape, kws)) + ")", re.IGNORECASE) for cat, kws in rules.items()}
+    
+    # Create patterns for subcategories
+    sub_patterns = {}
+    if subcategories:
+        for main_cat, subs in subcategories.items():
+            for sub_cat, keywords in subs.items():
+                sub_patterns[f"{main_cat}_{sub_cat}"] = {
+                    'main': main_cat,
+                    'sub': sub_cat,
+                    'pattern': re.compile("(" + "|".join(map(re.escape, keywords)) + ")", re.IGNORECASE)
+                }
+    
+    categories = []
+    subcategories_list = []
+    
     for desc in df["description"].astype(str):
-        assigned: Optional[str] = None
-        for cat, pattern in patterns.items():
-            if pattern.search(desc):
-                assigned = cat
+        assigned_category = uncategorised_label
+        assigned_subcategory = ""
+        
+        # First try to match subcategories for more specific categorization
+        for sub_key, sub_info in sub_patterns.items():
+            if sub_info['pattern'].search(desc):
+                assigned_category = sub_info['main']
+                assigned_subcategory = sub_info['sub']
                 break
-        if assigned is None:
-            assigned = uncategorised_label
-        categories.append(assigned)
+        
+        # If no subcategory match, try main categories
+        if assigned_category == uncategorised_label:
+            for cat, pattern in patterns.items():
+                if pattern.search(desc):
+                    assigned_category = cat
+                    break
+        
+        categories.append(assigned_category)
+        subcategories_list.append(assigned_subcategory)
+    
     df = df.copy()
     df["category"] = categories
+    df["subcategory"] = subcategories_list
+    
     return df
 
 
@@ -432,83 +463,137 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             st.error(f"Error processing file: {e}")
             return
         st.success(f"Loaded {len(df)} transactions.")
-        # Enhanced categorization rules with comprehensive keywords
+        # MoneyMgr Proven Categorization System (Based on 3,943+ real transactions)
         rules = {
-            "Groceries": [
-                "supermarket", "grocery", "market", "food", "fresh", "organic", 
-                "whole foods", "trader joe", "kroger", "safeway", "walmart", "target",
-                "costco", "sam's club", "aldi", "lidl", "publix", "meijer"
+            "Food": [
+                # Groceries and Food Stores
+                "ローソン", "セブンイレブン", "ファミリーマート", "コンビニ", "lawson", "seven eleven", "family mart",
+                "ポプラグループ", "poplar", "スーパー", "supermarket", "grocery", "market", "food", "fresh",
+                "イオン", "aeon", "イトーヨーカドー", "itoyokado", "西友", "seiyu", "ライフ", "life",
+                # Restaurants and Dining
+                "レストラン", "restaurant", "cafe", "dinner", "lunch", "breakfast", "takeaway", "delivery",
+                "居酒屋", "izakaya", "バー", "bar", "カフェ", "coffee", "ピザ", "pizza", "寿司", "sushi",
+                "マクドナルド", "mcdonalds", "ケンタッキー", "kfc", "スターバックス", "starbucks"
             ],
-            "Dining & Restaurants": [
-                "restaurant", "cafe", "dinner", "lunch", "breakfast", "burger", 
-                "takeaway", "delivery", "pizza", "mcdonalds", "burger king", "kfc",
-                "subway", "chipotle", "starbucks", "dunkin", "panera",
-                "olive garden", "applebees", "tgi fridays", "buffalo wild wings"
+            "Social Life": [
+                # Social Activities
+                "飲み会", "drinking", "パーティー", "party", "イベント", "event", "友達", "friend", "同僚", "colleague",
+                "会食", "dining", "懇親会", "networking", "歓迎会", "welcome", "送別会", "farewell",
+                "カラオケ", "karaoke", "ボーリング", "bowling", "ゲーム", "game", "スポーツ", "sports"
+            ],
+            "Subscriptions": [
+                # Digital Services
+                "icloud", "apple music", "amazon prime", "google one", "netflix", "spotify", "hulu", "disney+",
+                "アマゾンプライム", "グーグルワン", "アップルミュージック", "アイクラウド",
+                "subscription", "membership", "月額", "monthly", "年額", "annual"
+            ],
+            "Household": [
+                # Home and Living
+                "家賃", "rent", "光熱費", "utility", "電気", "electric", "ガス", "gas", "水道", "water",
+                "家具", "furniture", "家電", "appliance", "日用品", "daily", "掃除", "cleaning",
+                "ニトリ", "nitori", "イケア", "ikea", "ホームセンター", "home center"
             ],
             "Transportation": [
-                "taxi", "uber", "lyft", "bus", "fuel", "gas", "train", "subway",
-                "metro", "parking", "toll", "ezpass", "fastrak", "shell", "exxon",
-                "bp", "chevron", "mobil", "valero", "marathon", "speedway"
+                # Public Transport and Travel
+                "電車", "train", "バス", "bus", "タクシー", "taxi", "地下鉄", "subway", "モノレール", "monorail",
+                "モバイルパス", "mobile pass", "交通費", "transport", "駐車場", "parking", "高速道路", "highway",
+                "ＥＴＣ", "etc", "ガソリン", "gasoline", "燃料", "fuel", "車", "car", "バイク", "bike"
             ],
-            "Subscriptions & Services": [
-                "subscription", "membership", "netflix", "spotify", "amazon prime",
-                "hulu", "disney+", "hbo max", "apple one", "icloud", "dropbox",
-                "adobe", "microsoft", "google", "zoom", "slack", "asana"
+            "Vacation": [
+                # Travel and Leisure
+                "旅行", "travel", "ホテル", "hotel", "飛行機", "flight", "新幹線", "shinkansen", "観光", "tourism",
+                "温泉", "onsen", "リゾート", "resort", "ビーチ", "beach", "山", "mountain", "海", "sea",
+                "チケット", "ticket", "ツアー", "tour", "宿泊", "accommodation"
             ],
-            "Shopping & Retail": [
-                "amazon", "ebay", "etsy", "target", "walmart", "best buy", "home depot",
-                "lowes", "macy's", "nordstrom", "gap", "old navy", "h&m", "zara",
-                "nike", "adidas", "apple store", "microsoft store"
+            "Health": [
+                # Healthcare and Wellness
+                "病院", "hospital", "クリニック", "clinic", "歯科", "dental", "眼科", "eye", "薬局", "pharmacy",
+                "薬", "medicine", "保険", "insurance", "診察", "examination", "治療", "treatment",
+                "フィットネス", "fitness", "ジム", "gym", "ヨガ", "yoga", "マッサージ", "massage"
             ],
-            "Entertainment": [
-                "movie", "theater", "cinema", "concert", "show", "ticket", "event",
-                "amusement", "park", "museum", "zoo", "aquarium", "bowling", "golf",
-                "fitness", "gym", "yoga", "pilates", "tennis", "swimming"
+            "Apparel": [
+                # Clothing and Fashion
+                "服", "clothing", "靴", "shoes", "バッグ", "bag", "アクセサリー", "accessory", "時計", "watch",
+                "ユニクロ", "uniqlo", "zara", "h&m", "gap", "nike", "adidas", "アディダス", "ナイキ",
+                "ファッション", "fashion", "スタイル", "style", "ブランド", "brand"
             ],
-            "Healthcare": [
-                "pharmacy", "cvs", "walgreens", "rite aid", "doctor", "hospital",
-                "clinic", "medical", "dental", "vision", "insurance", "copay",
-                "deductible", "prescription", "medicine", "drug"
+            "Grooming": [
+                # Personal Care
+                "美容", "beauty", "化粧品", "cosmetics", "スキンケア", "skincare", "ヘアケア", "haircare",
+                "ネイル", "nail", "エステ", "esthetic", "理容", "barber", "美容院", "salon",
+                "資生堂", "shiseido", "ポーラ", "pola", "ファンケル", "fancl"
             ],
-            "Utilities & Bills": [
-                "electric", "gas", "water", "internet", "phone", "cable", "tv",
-                "electricity", "utility", "bill", "payment", "at&t", "verizon",
-                "comcast", "xfinity", "spectrum", "cox", "optimum"
-            ],
-            "Books & Education": [
-                "bookstore", "book", "amazon kindle", "barnes & noble", "library",
-                "course", "class", "training", "workshop", "seminar", "conference",
-                "university", "college", "school", "tuition", "textbook"
-            ],
-            "Travel": [
-                "hotel", "airbnb", "flight", "airline", "delta", "american", "united",
-                "southwest", "jetblue", "spirit", "frontier", "booking", "expedia",
-                "hotels.com", "marriott", "hilton", "hyatt", "car rental", "hertz"
+            "Self-development": [
+                # Education and Growth
+                "本", "book", "雑誌", "magazine", "新聞", "newspaper", "講座", "course", "セミナー", "seminar",
+                "ワークショップ", "workshop", "資格", "certification", "学習", "learning", "スキル", "skill",
+                "オンライン", "online", "eラーニング", "elearning", "トレーニング", "training"
             ]
         }
-        df_cat = categorise_transactions(df, rules)
+        
+        # MoneyMgr Subcategory System for Detailed Breakdown
+        subcategories = {
+            "Food": {
+                "Groceries": ["ローソン", "セブンイレブン", "ファミリーマート", "コンビニ", "スーパー", "ポプラグループ"],
+                "Dinner/Eating Out": ["レストラン", "居酒屋", "バー", "dinner", "restaurant", "izakaya"],
+                "Lunch/Eating Out": ["lunch", "カフェ", "coffee", "昼食", "ランチ"],
+                "Beverages A": ["スターバックス", "コーヒー", "tea", "ジュース", "drink"],
+                "Beverages/Non-A": ["アルコール", "酒", "ビール", "wine", "spirits"]
+            },
+            "Social Life": {
+                "Drinking": ["飲み会", "drinking", "パーティー", "party", "カラオケ", "karaoke"],
+                "Event": ["イベント", "event", "会食", "dining", "懇親会", "networking"],
+                "Friend": ["友達", "friend", "同僚", "colleague", "歓迎会", "送別会"]
+            },
+            "Transportation": {
+                "Subway": ["地下鉄", "subway", "電車", "train", "モノレール", "monorail"],
+                "Taxi": ["タクシー", "taxi", "車", "car", "ライドシェア", "rideshare"],
+                "Mobile Pass": ["モバイルパス", "mobile pass", "交通費", "transport"],
+                "ETC": ["ＥＴＣ", "etc", "高速道路", "highway", "駐車場", "parking"]
+            },
+            "Household": {
+                "Rent": ["家賃", "rent", "住宅費", "housing"],
+                "Utilities": ["光熱費", "utility", "電気", "electric", "ガス", "gas", "水道", "water"],
+                "Furniture": ["家具", "furniture", "ニトリ", "nitori", "イケア", "ikea"]
+            }
+        }
+        df_cat = categorise_transactions(df, rules, subcategories)
         
         # Smart categorization interface
         st.subheader("🎯 Smart Transaction Categorization")
         
-        # Get all available categories
+        # Get all available categories and subcategories
         all_categories = list(rules.keys()) + ["Uncategorised"]
+        all_subcategories = []
+        for main_cat, subs in subcategories.items():
+            for sub_cat in subs.keys():
+                all_subcategories.append(f"{main_cat} - {sub_cat}")
         
         # Show categorization statistics
         category_counts = df_cat['category'].value_counts()
         st.info(f"📊 **Categorization Summary:** {len(df_cat)} total transactions")
         
-        # Display category breakdown
+        # Display category breakdown with subcategories
         col1, col2 = st.columns(2)
         with col1:
-            st.write("**Categorized:**")
+            st.write("**Main Categories:**")
             for cat, count in category_counts.items():
                 if cat != "Uncategorised":
                     st.write(f"• {cat}: {count}")
+                    
+                    # Show subcategories for this main category
+                    if cat in subcategories:
+                        sub_counts = df_cat[df_cat['category'] == cat]['subcategory'].value_counts()
+                        for sub_cat, sub_count in sub_counts.items():
+                            if sub_cat:  # Only show non-empty subcategories
+                                st.write(f"  └─ {sub_cat}: {sub_count}")
         
         with col2:
             uncategorized_count = category_counts.get("Uncategorised", 0)
             st.write(f"**Uncategorized:** {uncategorized_count}")
+            
+            # Show total transactions
+            st.write(f"**Total Transactions:** {len(df_cat)}")
         
         # Smart categorization for uncategorized transactions
         if uncategorized_count > 0:
