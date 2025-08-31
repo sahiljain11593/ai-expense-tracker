@@ -372,7 +372,7 @@ def main() -> None:
     
     # AI Translation Setup
     st.sidebar.header("🤖 AI Translation Settings")
-    st.sidebar.write("For best Japanese translation accuracy, use OpenAI GPT-4")
+    st.sidebar.write("For best Japanese translation accuracy, use OpenAI GPT-3.5")
     
     # Check for existing API key
     existing_api_key = os.getenv('OPENAI_API_KEY')
@@ -489,7 +489,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         df_cat = categorise_transactions(df, rules)
         st.subheader("Review transactions")
         st.write("You can edit the category column below to correct misclassifications or fill in Uncategorised items.")
-        edited_df = st.experimental_data_editor(df_cat, num_rows="dynamic")
+        edited_df = st.data_editor(df_cat, num_rows="dynamic")
         if not edited_df.empty:
             edited_df["month"] = pd.to_datetime(edited_df["date"]).dt.to_period("M").astype(str)
             summary = (
