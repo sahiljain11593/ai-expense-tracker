@@ -487,15 +487,94 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             ]
         }
         df_cat = categorise_transactions(df, rules)
-        st.subheader("Review transactions")
-        st.write("You can edit the category column below to correct misclassifications or fill in Uncategorised items.")
+        
+        # Smart categorization interface
+        st.subheader("🎯 Smart Transaction Categorization")
+        
+        # Get all available categories
+        all_categories = list(rules.keys()) + ["Uncategorised"]
+        
+        # Show categorization statistics
+        category_counts = df_cat['category'].value_counts()
+        st.info(f"📊 **Categorization Summary:** {len(df_cat)} total transactions")
+        
+        # Display category breakdown
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("**Categorized:**")
+            for cat, count in category_counts.items():
+                if cat != "Uncategorised":
+                    st.write(f"• {cat}: {count}")
+        
+        with col2:
+            uncategorized_count = category_counts.get("Uncategorised", 0)
+            st.write(f"**Uncategorized:** {uncategorized_count}")
+        
+        # Smart categorization for uncategorized transactions
+        if uncategorized_count > 0:
+            st.subheader("🚀 Quick Categorization")
+            st.write("Use the dropdowns below to quickly categorize uncategorized transactions:")
+            
+            # Get uncategorized transactions
+            uncategorized_df = df_cat[df_cat['category'] == 'Uncategorised'].copy()
+            
+            # Create a form for bulk categorization
+            with st.form("bulk_categorization"):
+                # Suggest categories based on description keywords
+                for idx, row in uncategorized_df.iterrows():
+                    description = str(row['description']).lower()
+                    original_desc = str(row.get('original_description', '')).lower()
+                    
+                    # Smart category suggestions based on keywords
+                    suggested_category = "Uncategorised"
+                    for category, keywords in rules.items():
+                        if any(keyword.lower() in description or keyword.lower() in original_desc for keyword in keywords):
+                            suggested_category = category
+                            break
+                    
+                    # Special handling for common Japanese merchants
+                    if any(word in original_desc for word in ['ローソン', 'セブンイレブン', 'ファミマ', 'コンビニ']):
+                        suggested_category = "Groceries"
+                    elif any(word in original_desc for word in ['ニトリ', 'イケア', '家具']):
+                        suggested_category = "Shopping & Retail"
+                    elif any(word in original_desc for word in ['アマゾン', 'amazon']):
+                        suggested_category = "Shopping & Retail"
+                    elif any(word in original_desc for word in ['モバイルパス', '交通']):
+                        suggested_category = "Transportation"
+                    
+                    col1, col2, col3 = st.columns([3, 2, 1])
+                    with col1:
+                        st.write(f"**{row['description'][:50]}...**")
+                    with col2:
+                        new_category = st.selectbox(
+                            f"Category for {row['description'][:30]}...",
+                            all_categories,
+                            index=all_categories.index(suggested_category),
+                            key=f"cat_{idx}"
+                        )
+                    with col3:
+                        st.write(f"¥{row['amount']:,}")
+                    
+                    # Update the category
+                    df_cat.loc[idx, 'category'] = new_category
+                
+                submitted = st.form_submit_button("✅ Apply All Categorizations")
+                if submitted:
+                    st.success("🎉 All categories updated! Scroll down to see the results.")
+        
+        # Show the final categorized data
+        st.subheader("📋 Review All Transactions")
+        st.write("Final categorized transactions (you can still edit individual categories):")
+        
+        # Use data editor for final review
         edited_df = st.data_editor(df_cat, num_rows="dynamic")
+        
         if not edited_df.empty:
             edited_df["month"] = pd.to_datetime(edited_df["date"]).dt.to_period("M").astype(str)
             summary = (
                 edited_df.groupby(["month", "category"])["amount"].sum().reset_index(name="total_amount")
             )
-            st.subheader("Monthly summary")
+            st.subheader("📊 Monthly Summary")
             st.write(summary)
             pivot = summary.pivot(index="month", columns="category", values="total_amount").fillna(0)
             st.bar_chart(pivot)
