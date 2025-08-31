@@ -264,8 +264,8 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
         with col3:
             amount_col = st.selectbox("Amount column:", df.columns, index=2)
     
-    # Show column mapping
-    st.info(f"Column mapping: Date='{date_col}', Description='{desc_col}', Amount='{amount_col}'")
+    # Show column mapping in a clean format
+    st.markdown(f"**📋 Column Mapping:** Date='{date_col}', Description='{desc_col}', Amount='{amount_col}'")
     
     # Process the data
     transactions = []
@@ -298,9 +298,9 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             original_description = description
             description = translate_japanese_to_english(description, translation_mode, api_key)
             
-            # Show translation progress
+            # Show translation progress in a clean format
             if original_description != description:
-                st.info(f"Translated: '{original_description}' → '{description}'")
+                st.markdown(f"**🔄 Translated:** `{original_description[:30]}...` → `{description[:30]}...`")
                 
             # Handle amount (could be positive or negative)
             amount_str = str(row[amount_col]).strip()
@@ -541,7 +541,7 @@ def main() -> None:
             4. **Copy the key** (starts with `sk-...`)
             5. **Paste it above** for AI-powered Japanese translation
             """)
-            st.info("💡 Your ChatGPT Premium account gives you access to the API!")
+            st.success("💡 Your ChatGPT Premium account gives you access to the API!")
     
     # Translation mode selection
     if api_key:
@@ -553,7 +553,7 @@ def main() -> None:
         )
     else:
         translation_mode = "Free Fallback"
-        st.sidebar.info("ℹ️ Using free translation (enter API key for AI accuracy)")
+        st.sidebar.success("ℹ️ Using free translation (enter API key for AI accuracy)")
     
     # Smart Learning Dashboard
     if learning_system:
