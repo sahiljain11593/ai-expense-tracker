@@ -187,7 +187,7 @@ def translate_japanese_to_english_fallback(text: str) -> str:
         st.warning(f"Fallback translation failed for '{text}': {e}")
         return text
 
-def translate_japanese_to_english(text: str, mode: str = "AI-Powered (GPT-3.5)", api_key: str = None) -> str:
+def translate_japanese_to_english(text: str, mode: str = "Free Fallback", api_key: str = None) -> str:
     """Main translation function - handles different translation modes."""
     if mode == "AI-Powered (GPT-3.5)":
         return translate_japanese_to_english_ai(text, api_key)
@@ -409,9 +409,9 @@ def main() -> None:
     if api_key:
         translation_mode = st.sidebar.selectbox(
             "Translation Mode",
-            ["AI-Powered (GPT-3.5)", "Free Fallback", "No Translation"],
-            index=0,  # Default to AI-powered
-            help="AI translation provides the best accuracy for Japanese financial terms"
+            ["Free Fallback", "AI-Powered (GPT-3.5)", "No Translation"],
+            index=0,  # Default to Free Fallback
+            help="Free Fallback uses Google Translate, AI-Powered uses OpenAI for better accuracy"
         )
     else:
         translation_mode = "Free Fallback"
