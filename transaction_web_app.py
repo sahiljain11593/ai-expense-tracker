@@ -32,6 +32,14 @@ from typing import Dict, List, Optional
 import pandas as pd
 import streamlit as st
 
+# Import smart learning system
+try:
+    from smart_learning_system import SmartLearningSystem
+    SMART_LEARNING_AVAILABLE = True
+except ImportError:
+    SMART_LEARNING_AVAILABLE = False
+    print("Smart learning system not available")
+
 try:
     import pdfplumber  # type: ignore
 except ImportError:
@@ -416,6 +424,52 @@ def categorise_transactions(
     return df
 
 
+def apply_smart_categorization(df: pd.DataFrame, learning_system: SmartLearningSystem, 
+                              rules: Dict[str, List[str]], subcategories: Dict) -> pd.DataFrame:
+    """Apply smart categorization using the learning system."""
+    
+    df = df.copy()
+    categories = []
+    subcategories_list = []
+    confidences = []
+    prediction_breakdowns = []
+    
+    for idx, row in df.iterrows():
+        # Prepare transaction data for prediction
+        transaction_data = {
+            'description': row.get('description', ''),
+            'original_description': row.get('original_description', ''),
+            'amount': row.get('amount', 0),
+            'date': row.get('date'),
+            'transaction_type': row.get('transaction_type', 'Expense')
+        }
+        
+        # Get smart prediction
+        predicted_category, confidence, breakdown = learning_system.predict_category(transaction_data)
+        
+        # Apply subcategory if available
+        predicted_subcategory = ""
+        if predicted_category in subcategories:
+            # Find best matching subcategory
+            for sub_cat, keywords in subcategories[predicted_category].items():
+                if any(keyword.lower() in str(transaction_data['description']).lower() 
+                       for keyword in keywords):
+                    predicted_subcategory = sub_cat
+                    break
+        
+        categories.append(predicted_category)
+        subcategories_list.append(predicted_subcategory)
+        confidences.append(confidence)
+        prediction_breakdowns.append(breakdown)
+    
+    df['category'] = categories
+    df['subcategory'] = subcategories_list
+    df['confidence'] = confidences
+    df['prediction_breakdown'] = prediction_breakdowns
+    
+    return df
+
+
 def save_custom_rules(rules: Dict[str, List[str]], filename: str = "custom_rules.json") -> None:
     """Save custom categorization rules to a JSON file."""
     import json
@@ -445,6 +499,14 @@ def main() -> None:
         "Upload a credit card statement in PDF, CSV, or image format. The app will extract transaction data, "
         "assign categories based on keyword rules and let you review the results."
     )
+    
+    # Initialize Smart Learning System
+    if SMART_LEARNING_AVAILABLE:
+        learning_system = SmartLearningSystem()
+        st.sidebar.success("🧠 Smart Learning System Active")
+    else:
+        learning_system = None
+        st.sidebar.warning("⚠️ Smart Learning System Not Available")
     
     # AI Translation Setup
     st.sidebar.header("🤖 AI Translation Settings")
@@ -492,6 +554,27 @@ def main() -> None:
     else:
         translation_mode = "Free Fallback"
         st.sidebar.info("ℹ️ Using free translation (enter API key for AI accuracy)")
+    
+    # Smart Learning Dashboard
+    if learning_system:
+        st.sidebar.header("🧠 Smart Learning Dashboard")
+        
+        # Show learning statistics
+        stats = learning_system.get_learning_stats()
+        st.sidebar.write(f"**Total Corrections:** {stats['total_corrections']}")
+        st.sidebar.write(f"**Merchant Patterns:** {stats['merchant_patterns']}")
+        st.sidebar.write(f"**Models Trained:** {'Yes' if stats['models_trained'] else 'No'}")
+        st.sidebar.write(f"**Last Training:** {stats['last_training']}")
+        
+        # Training options
+        with st.sidebar.expander("🚀 Training Options"):
+            if st.button("Train Models"):
+                if 'df_cat' in locals() and not df_cat.empty:
+                    with st.spinner("Training models..."):
+                        learning_system.train_models(df_cat)
+                    st.success("Models trained successfully!")
+                else:
+                    st.warning("Upload data first to train models")
     
     # File upload
     uploaded_file = st.file_uploader("Choose a statement file", 
@@ -605,8 +688,13 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         # Detect transaction types (credit vs debit)
         df = detect_transaction_type(df)
         
-        # Apply categorization
-        df_cat = categorise_transactions(df, rules, subcategories)
+        # Apply categorization with smart learning if available
+        if learning_system:
+            # Use smart learning system for predictions
+            df_cat = apply_smart_categorization(df, learning_system, rules, subcategories)
+        else:
+            # Fallback to basic categorization
+            df_cat = categorise_transactions(df, rules, subcategories)
         
         # Smart categorization interface
         st.subheader("🎯 Smart Transaction Categorization")
@@ -619,10 +707,18 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 all_subcategories.append(f"{main_cat} - {sub_cat}")
         
         # Show categorization statistics
-        category_counts = df_cat['category'].value_counts()
-        transaction_type_counts = df_cat['transaction_type'].value_counts()
+        category_counts = df_cat['transaction_type'].value_counts()
         
-        st.info(f"📊 **Categorization Summary:** {len(df_cat)} total transactions")
+        # Show confidence statistics if available
+        if 'confidence' in df_cat.columns:
+            avg_confidence = df_cat['confidence'].mean()
+            high_confidence = len(df_cat[df_cat['confidence'] >= 0.8])
+            low_confidence = len(df_cat[df_cat['confidence'] < 0.5])
+            
+            st.info(f"📊 **Categorization Summary:** {len(df_cat)} total transactions")
+            st.info(f"🎯 **Confidence:** Average {avg_confidence:.1%} | High ({high_confidence}) | Low ({low_confidence})")
+        else:
+            st.info(f"📊 **Categorization Summary:** {len(df_cat)} total transactions")
         
         # Display transaction type breakdown
         col1, col2 = st.columns(2)
@@ -683,7 +779,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             # Create a form for bulk categorization
             with st.form("bulk_categorization"):
                 # Header row for clarity
-                col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 1, 1])
+                col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 1, 1, 1])
                 with col1:
                     st.write("**📅 Date & Description**")
                 with col2:
@@ -694,6 +790,8 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     st.write("**💰 Amount**")
                 with col5:
                     st.write("**💳 Type**")
+                with col6:
+                    st.write("**🎯 Confidence**")
                 st.divider()
                 
                 # Suggest categories based on description keywords
@@ -718,7 +816,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     elif any(word in original_desc for word in ['モバイルパス', '交通']):
                         suggested_category = "Transportation"
                     
-                    col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 1, 1])
+                    col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 1, 1, 1])
                     with col1:
                         # Show transaction date
                         transaction_date = row.get('date', 'Unknown Date')
@@ -750,13 +848,47 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                             st.write("🟢 **Credit**")
                         else:
                             st.write("🔴 **Expense**")
+                    with col6:
+                        # Show confidence score if available
+                        if 'confidence' in row:
+                            confidence = row['confidence']
+                            if confidence >= 0.8:
+                                st.write("🟢 **High**")
+                            elif confidence >= 0.5:
+                                st.write("🟡 **Med**")
+                            else:
+                                st.write("🔴 **Low**")
+                            st.write(f"**{confidence:.0%}**")
+                        else:
+                            st.write("⚪ **N/A**")
                     
                     # Update the category
                     df_cat.loc[idx, 'category'] = new_category
                 
                 submitted = st.form_submit_button("✅ Apply All Categorizations")
                 if submitted:
+                    # Learn from user corrections if smart learning is available
+                    if learning_system:
+                        for idx, row in uncategorized_df.iterrows():
+                            original_category = row.get('category', 'Uncategorised')
+                            if original_category != new_category:
+                                # Collect feedback for learning
+                                transaction_data = {
+                                    'description': row.get('description', ''),
+                                    'original_description': row.get('original_description', ''),
+                                    'amount': row.get('amount', 0),
+                                    'date': row.get('date'),
+                                    'transaction_type': row.get('transaction_type', 'Expense')
+                                }
+                                learning_system.learn_from_user_feedback(
+                                    str(idx), original_category, new_category, transaction_data
+                                )
+                    
                     st.success("🎉 All categories updated! Scroll down to see the results.")
+                    
+                    # Show learning feedback
+                    if learning_system:
+                        st.info("🧠 Smart Learning System has learned from your corrections!")
         
         # Show the final categorized data
         st.subheader("📋 Review All Transactions")
