@@ -129,7 +129,7 @@ def extract_transactions_from_image(file_stream: io.BytesIO) -> pd.DataFrame:
 
 
 def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
-    """Translate Japanese text to English using OpenAI GPT-4 for high accuracy."""
+    """Translate Japanese text to English using OpenAI GPT-3.5-turbo for high accuracy."""
     try:
         import openai
         
@@ -156,9 +156,9 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
         
         English translation:"""
         
-        # Get translation from GPT-4
+        # Get translation from GPT-3.5-turbo
         response = client.chat.completions.create(
-            model="gpt-4",
+            model="gpt-3.5-turbo",
             messages=[
                 {"role": "system", "content": "You are a professional translator specializing in financial documents. Translate Japanese to English accurately, especially for merchant names and financial terms."},
                 {"role": "user", "content": prompt}
@@ -187,9 +187,9 @@ def translate_japanese_to_english_fallback(text: str) -> str:
         st.warning(f"Fallback translation failed for '{text}': {e}")
         return text
 
-def translate_japanese_to_english(text: str, mode: str = "AI-Powered (GPT-4)", api_key: str = None) -> str:
+def translate_japanese_to_english(text: str, mode: str = "AI-Powered (GPT-3.5)", api_key: str = None) -> str:
     """Main translation function - handles different translation modes."""
-    if mode == "AI-Powered (GPT-4)":
+    if mode == "AI-Powered (GPT-3.5)":
         return translate_japanese_to_english_ai(text, api_key)
     elif mode == "Free Fallback":
         return translate_japanese_to_english_fallback(text)
@@ -409,7 +409,7 @@ def main() -> None:
     if api_key:
         translation_mode = st.sidebar.selectbox(
             "Translation Mode",
-            ["AI-Powered (GPT-4)", "Free Fallback", "No Translation"],
+            ["AI-Powered (GPT-3.5)", "Free Fallback", "No Translation"],
             index=0,  # Default to AI-powered
             help="AI translation provides the best accuracy for Japanese financial terms"
         )

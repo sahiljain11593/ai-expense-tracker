@@ -46,7 +46,7 @@ For best Japanese translation accuracy:
 
 1. Get your API key from [OpenAI Platform](https://platform.openai.com/api-keys)
 2. Enter it in the app's sidebar
-3. Choose "AI-Powered (GPT-4)" translation mode
+3. Choose "AI-Powered (GPT-3.5)" translation mode
 
 ## 📁 Supported File Formats
 
@@ -87,7 +87,7 @@ export OPENAI_API_KEY="your-api-key-here"
 ```
 
 ### Translation Modes
-- **AI-Powered (GPT-4)**: Best accuracy, requires API key
+- **AI-Powered (GPT-3.5)**: Best accuracy, requires API key
 - **Free Fallback**: Basic translation, no cost
 - **No Translation**: Keep original text
 
