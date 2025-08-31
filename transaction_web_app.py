@@ -225,11 +225,13 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
                     '利用店名・商品名', '店舗名', '商品名', '取引内容']
     amount_columns = ['amount', 'debit', 'credit', 'transaction_amount', 'amount_debited', 'amount_credited',
                       '利用金額', '支払金額', '取引金額']
+    time_columns = ['time', 'transaction_time', 'time_posted', 'timestamp', '取引時刻', '利用時刻', '決済時刻']
     
     # Find the actual column names in the CSV
     date_col = None
     desc_col = None
     amount_col = None
+    time_col = None
     
     for col in df.columns:
         col_lower = col.lower().strip()
@@ -242,6 +244,8 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             desc_col = col
         elif col_lower in [name.lower() for name in amount_columns]:
             amount_col = col
+        elif col_lower in [name.lower() for name in time_columns]:
+            time_col = col
         
         # Check Japanese column names
         if col_original in date_columns:
@@ -250,6 +254,8 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             desc_col = col
         elif col_original in amount_columns:
             amount_col = col
+        elif col_original in time_columns:
+            time_col = col
     
     if not all([date_col, desc_col, amount_col]):
         # If we can't find the expected columns, show available columns and let user choose
@@ -265,7 +271,8 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             amount_col = st.selectbox("Amount column:", df.columns, index=2)
     
     # Show column mapping in a clean format
-    st.info(f"📋 **Column Mapping:** Date='{date_col}', Description='{desc_col}', Amount='{amount_col}'")
+    time_info = f", Time='{time_col}'" if time_col else ""
+    st.info(f"📋 **Column Mapping:** Date='{date_col}', Description='{desc_col}', Amount='{amount_col}'{time_info}")
     
     # Process the data with progress bar
     st.write("🔄 **Processing transactions and translating Japanese text...**")
@@ -301,6 +308,24 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             
             if date is None:
                 continue
+            
+            # Extract timestamp if available
+            timestamp = None
+            if time_col:
+                time_str = str(row[time_col]).strip()
+                if not pd.isna(time_str) and time_str != '':
+                    try:
+                        # Try to parse time in various formats
+                        time_formats = ['%H:%M:%S', '%H:%M', '%H.%M.%S', '%H.%M']
+                        for fmt in time_formats:
+                            try:
+                                time_obj = datetime.strptime(time_str, fmt).time()
+                                timestamp = time_obj
+                                break
+                            except ValueError:
+                                continue
+                    except:
+                        pass
                 
             # Get description and translate if it's Japanese
             description = str(row[desc_col]).strip()
@@ -322,6 +347,7 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             
             transactions.append({
                 "date": date,
+                "timestamp": timestamp,
                 "description": description,
                 "original_description": original_description,  # Keep original for reference
                 "amount": amount
@@ -805,7 +831,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             # Create a form for bulk categorization
             with st.form("bulk_categorization"):
                 # Header row for clarity
-                col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 1, 1, 1])
+                col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 2, 1, 1, 1, 1])
                 with col1:
                     st.write("**📅 Date & Description**")
                 with col2:
@@ -818,6 +844,8 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     st.write("**💳 Type**")
                 with col6:
                     st.write("**🎯 Confidence**")
+                with col7:
+                    st.write("**⏰ Time**")
                 st.divider()
                 
                 # Suggest categories based on description keywords
@@ -842,7 +870,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     elif any(word in original_desc for word in ['モバイルパス', '交通']):
                         suggested_category = "Transportation"
                     
-                    col1, col2, col3, col4, col5, col6 = st.columns([2, 2, 2, 1, 1, 1])
+                    col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 2, 1, 1, 1, 1])
                     with col1:
                         # Show transaction date
                         transaction_date = row.get('date', 'Unknown Date')
@@ -887,6 +915,17 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                             st.write(f"**{confidence:.0%}**")
                         else:
                             st.write("⚪ **N/A**")
+                    with col7:
+                        # Show timestamp if available
+                        if 'timestamp' in row and row.get('timestamp'):
+                            timestamp = row['timestamp']
+                            if hasattr(timestamp, 'strftime'):
+                                time_str = timestamp.strftime('%H:%M:%S')
+                            else:
+                                time_str = str(timestamp)
+                            st.write(f"**⏰ {time_str}**")
+                        else:
+                            st.write("**⏰ N/A**")
                     
                     # Update the category
                     df_cat.loc[idx, 'category'] = new_category
@@ -920,8 +959,23 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         st.subheader("📋 Review All Transactions")
         st.write("Final categorized transactions (you can still edit individual categories):")
         
+        # Prepare data for display with better formatting
+        display_df = df_cat.copy()
+        
+        # Format timestamp column for better display
+        if 'timestamp' in display_df.columns:
+            display_df['timestamp'] = display_df['timestamp'].apply(
+                lambda x: x.strftime('%H:%M:%S') if pd.notna(x) and hasattr(x, 'strftime') else x
+            )
+        
+        # Format date column for better display
+        if 'date' in display_df.columns:
+            display_df['date'] = display_df['date'].apply(
+                lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) and hasattr(x, 'strftime') else x
+            )
+        
         # Use data editor for final review
-        edited_df = st.data_editor(df_cat, num_rows="dynamic")
+        edited_df = st.data_editor(display_df, num_rows="dynamic")
         
         if not edited_df.empty:
             edited_df["month"] = pd.to_datetime(edited_df["date"]).dt.to_period("M").astype(str)
