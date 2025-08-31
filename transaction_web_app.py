@@ -320,6 +320,51 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
     st.success(f"Successfully processed {len(transactions)} transactions with Japanese translation!")
     df_result = pd.DataFrame(transactions)
     return df_result
+def detect_transaction_type(df: pd.DataFrame) -> pd.DataFrame:
+    """Detect and classify transactions as credit (income) or debit (expense)."""
+    
+    df = df.copy()
+    
+    # Initialize transaction type column
+    df['transaction_type'] = 'Expense'  # Default to expense
+    
+    # Check for common credit indicators
+    credit_keywords = [
+        'refund', 'credit', 'payment', 'adjustment', 'reversal', 'return',
+        '返金', 'クレジット', '支払い', '調整', '取消', '返品',
+        'statement credit', 'cashback', 'rewards', 'bonus'
+    ]
+    
+    # Check for common debit indicators
+    debit_keywords = [
+        'purchase', 'charge', 'fee', 'withdrawal', 'cash advance',
+        '購入', 'チャージ', '手数料', '引き出し', '現金引き出し'
+    ]
+    
+    for idx, row in df.iterrows():
+        description = str(row.get('description', '')).lower()
+        original_desc = str(row.get('original_description', '')).lower()
+        amount = row.get('amount', 0)
+        
+        # Check if amount is negative (credit)
+        if amount < 0:
+            df.loc[idx, 'transaction_type'] = 'Credit'
+            # Make amount positive for display
+            df.loc[idx, 'amount'] = abs(amount)
+            continue
+        
+        # Check description keywords
+        is_credit = any(keyword in description or keyword in original_desc for keyword in credit_keywords)
+        is_debit = any(keyword in description or keyword in original_desc for keyword in debit_keywords)
+        
+        if is_credit and not is_debit:
+            df.loc[idx, 'transaction_type'] = 'Credit'
+        elif is_debit and not is_credit:
+            df.loc[idx, 'transaction_type'] = 'Expense'
+        # If both or neither, keep default (Expense)
+    
+    return df
+
 def categorise_transactions(
     df: pd.DataFrame, rules: Dict[str, List[str]], subcategories: Dict[str, Dict[str, List[str]]] = None, 
     uncategorised_label: str = "Uncategorised"
@@ -557,6 +602,10 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 "Furniture": ["家具", "furniture", "ニトリ", "nitori", "イケア", "ikea"]
             }
         }
+        # Detect transaction types (credit vs debit)
+        df = detect_transaction_type(df)
+        
+        # Apply categorization
         df_cat = categorise_transactions(df, rules, subcategories)
         
         # Smart categorization interface
@@ -571,29 +620,57 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         
         # Show categorization statistics
         category_counts = df_cat['category'].value_counts()
+        transaction_type_counts = df_cat['transaction_type'].value_counts()
+        
         st.info(f"📊 **Categorization Summary:** {len(df_cat)} total transactions")
+        
+        # Display transaction type breakdown
+        col1, col2 = st.columns(2)
+        with col1:
+            st.write("**Transaction Types:**")
+            for trans_type, count in transaction_type_counts.items():
+                if trans_type == 'Credit':
+                    st.write(f"🟢 **{trans_type}:** {count} transactions")
+                else:
+                    st.write(f"🔴 **{trans_type}:** {count} transactions")
+        
+        with col2:
+            # Calculate totals
+            total_expenses = df_cat[df_cat['transaction_type'] == 'Expense']['amount'].sum()
+            total_credits = df_cat[df_cat['transaction_type'] == 'Credit']['amount'].sum()
+            net_amount = total_expenses - total_credits
+            
+            st.write("**Financial Summary:**")
+            st.write(f"🔴 **Total Expenses:** ¥{total_expenses:,.0f}")
+            st.write(f"🟢 **Total Credits:** ¥{total_credits:,.0f}")
+            st.write(f"💰 **Net Amount:** ¥{net_amount:,.0f}")
+        
+        st.divider()
         
         # Display category breakdown with subcategories
         col1, col2 = st.columns(2)
         with col1:
-            st.write("**Main Categories:**")
-            for cat, count in category_counts.items():
+            st.write("**Main Categories (Expenses Only):**")
+            expense_df = df_cat[df_cat['transaction_type'] == 'Expense']
+            expense_category_counts = expense_df['category'].value_counts()
+            
+            for cat, count in expense_category_counts.items():
                 if cat != "Uncategorised":
                     st.write(f"• {cat}: {count}")
                     
                     # Show subcategories for this main category
                     if cat in subcategories:
-                        sub_counts = df_cat[df_cat['category'] == cat]['subcategory'].value_counts()
+                        sub_counts = expense_df[expense_df['category'] == cat]['subcategory'].value_counts()
                         for sub_cat, sub_count in sub_counts.items():
                             if sub_cat:  # Only show non-empty subcategories
                                 st.write(f"  └─ {sub_cat}: {sub_count}")
         
         with col2:
-            uncategorized_count = category_counts.get("Uncategorised", 0)
-            st.write(f"**Uncategorized:** {uncategorized_count}")
+            uncategorized_count = expense_category_counts.get("Uncategorised", 0)
+            st.write(f"**Uncategorized Expenses:** {uncategorized_count}")
             
-            # Show total transactions
-            st.write(f"**Total Transactions:** {len(df_cat)}")
+            # Show total expenses
+            st.write(f"**Total Expenses:** {len(expense_df)}")
         
         # Smart categorization for uncategorized transactions
         if uncategorized_count > 0:
@@ -606,7 +683,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             # Create a form for bulk categorization
             with st.form("bulk_categorization"):
                 # Header row for clarity
-                col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+                col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 1, 1])
                 with col1:
                     st.write("**📅 Date & Description**")
                 with col2:
@@ -615,6 +692,8 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     st.write("**🏷️ Category**")
                 with col4:
                     st.write("**💰 Amount**")
+                with col5:
+                    st.write("**💳 Type**")
                 st.divider()
                 
                 # Suggest categories based on description keywords
@@ -639,7 +718,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     elif any(word in original_desc for word in ['モバイルパス', '交通']):
                         suggested_category = "Transportation"
                     
-                    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+                    col1, col2, col3, col4, col5 = st.columns([2, 2, 2, 1, 1])
                     with col1:
                         # Show transaction date
                         transaction_date = row.get('date', 'Unknown Date')
@@ -664,6 +743,13 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                         )
                     with col4:
                         st.write(f"**¥{row['amount']:,}**")
+                    with col5:
+                        # Show transaction type with color coding
+                        trans_type = row.get('transaction_type', 'Expense')
+                        if trans_type == 'Credit':
+                            st.write("🟢 **Credit**")
+                        else:
+                            st.write("🔴 **Expense**")
                     
                     # Update the category
                     df_cat.loc[idx, 'category'] = new_category
