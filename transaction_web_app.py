@@ -605,6 +605,18 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             
             # Create a form for bulk categorization
             with st.form("bulk_categorization"):
+                # Header row for clarity
+                col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
+                with col1:
+                    st.write("**📅 Date & Description**")
+                with col2:
+                    st.write("**🇯🇵 Original (Japanese)**")
+                with col3:
+                    st.write("**🏷️ Category**")
+                with col4:
+                    st.write("**💰 Amount**")
+                st.divider()
+                
                 # Suggest categories based on description keywords
                 for idx, row in uncategorized_df.iterrows():
                     description = str(row['description']).lower()
@@ -627,18 +639,31 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     elif any(word in original_desc for word in ['モバイルパス', '交通']):
                         suggested_category = "Transportation"
                     
-                    col1, col2, col3 = st.columns([3, 2, 1])
+                    col1, col2, col3, col4 = st.columns([2, 2, 2, 1])
                     with col1:
-                        st.write(f"**{row['description'][:50]}...**")
+                        # Show transaction date
+                        transaction_date = row.get('date', 'Unknown Date')
+                        if hasattr(transaction_date, 'strftime'):
+                            date_str = transaction_date.strftime('%Y-%m-%d')
+                        else:
+                            date_str = str(transaction_date)
+                        st.write(f"**📅 {date_str}**")
+                        st.write(f"**{row['description'][:40]}...**")
                     with col2:
+                        # Show original description if available
+                        if row.get('original_description'):
+                            st.write(f"**🇯🇵 {row['original_description'][:30]}...**")
+                        else:
+                            st.write("**No original description**")
+                    with col3:
                         new_category = st.selectbox(
-                            f"Category for {row['description'][:30]}...",
+                            f"Category for {row['description'][:25]}...",
                             all_categories,
                             index=all_categories.index(suggested_category),
                             key=f"cat_{idx}"
                         )
-                    with col3:
-                        st.write(f"¥{row['amount']:,}")
+                    with col4:
+                        st.write(f"**¥{row['amount']:,}**")
                     
                     # Update the category
                     df_cat.loc[idx, 'category'] = new_category
