@@ -265,12 +265,25 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             amount_col = st.selectbox("Amount column:", df.columns, index=2)
     
     # Show column mapping in a clean format
-    st.markdown(f"**📋 Column Mapping:** Date='{date_col}', Description='{desc_col}', Amount='{amount_col}'")
+    st.info(f"📋 **Column Mapping:** Date='{date_col}', Description='{desc_col}', Amount='{amount_col}'")
     
-    # Process the data
+    # Process the data with progress bar
+    st.write("🔄 **Processing transactions and translating Japanese text...**")
+    
+    # Create progress bar
+    progress_bar = st.progress(0)
+    status_text = st.empty()
+    
     transactions = []
+    total_rows = len(df)
+    
     for idx, row in df.iterrows():
         try:
+            # Update progress
+            progress = (idx + 1) / total_rows
+            progress_bar.progress(progress)
+            status_text.text(f"Processing row {idx + 1} of {total_rows} ({progress:.1%})")
+            
             # Handle different date formats
             date_str = str(row[date_col]).strip()
             if pd.isna(date_str) or date_str == '':
@@ -297,10 +310,6 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             # Translate Japanese description to English
             original_description = description
             description = translate_japanese_to_english(description, translation_mode, api_key)
-            
-            # Show translation progress in a clean format
-            if original_description != description:
-                st.markdown(f"**🔄 Translated:** `{original_description[:30]}...` → `{description[:30]}...`")
                 
             # Handle amount (could be positive or negative)
             amount_str = str(row[amount_col]).strip()
@@ -322,10 +331,18 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             st.warning(f"Error processing row {idx + 1}: {row}. Error: {e}")
             continue
     
+    # Complete progress bar
+    progress_bar.progress(1.0)
+    status_text.text("✅ Processing complete!")
+    
     if not transactions:
         raise RuntimeError("No valid transactions found in the CSV file.")
     
-    st.success(f"Successfully processed {len(transactions)} transactions with Japanese translation!")
+    # Clear progress elements
+    progress_bar.empty()
+    status_text.empty()
+    
+    st.success(f"✅ Successfully processed {len(transactions)} transactions!")
     df_result = pd.DataFrame(transactions)
     return df_result
 def detect_transaction_type(df: pd.DataFrame) -> pd.DataFrame:
