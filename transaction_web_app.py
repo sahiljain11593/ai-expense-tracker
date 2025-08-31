@@ -27,7 +27,7 @@ import io
 import os
 import re
 from datetime import datetime
-from typing import Dict, List, Optional
+
 
 import pandas as pd
 import streamlit as st
@@ -374,7 +374,7 @@ def detect_transaction_type(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 def categorise_transactions(
-    df: pd.DataFrame, rules: Dict[str, List[str]], subcategories: Dict[str, Dict[str, List[str]]] = None, 
+    df: pd.DataFrame, rules, subcategories = None, 
     uncategorised_label: str = "Uncategorised"
 ) -> pd.DataFrame:
     """Enhanced categorization with support for main categories and subcategories."""
@@ -424,8 +424,8 @@ def categorise_transactions(
     return df
 
 
-def apply_smart_categorization(df: pd.DataFrame, learning_system: SmartLearningSystem, 
-                              rules: Dict[str, List[str]], subcategories: Dict) -> pd.DataFrame:
+def apply_smart_categorization(df: pd.DataFrame, learning_system, 
+                              rules, subcategories) -> pd.DataFrame:
     """Apply smart categorization using the learning system."""
     
     df = df.copy()
@@ -470,7 +470,7 @@ def apply_smart_categorization(df: pd.DataFrame, learning_system: SmartLearningS
     return df
 
 
-def save_custom_rules(rules: Dict[str, List[str]], filename: str = "custom_rules.json") -> None:
+def save_custom_rules(rules, filename: str = "custom_rules.json") -> None:
     """Save custom categorization rules to a JSON file."""
     import json
     try:
@@ -480,7 +480,7 @@ def save_custom_rules(rules: Dict[str, List[str]], filename: str = "custom_rules
     except Exception as e:
         st.error(f"Error saving rules: {e}")
 
-def load_custom_rules(filename: str = "custom_rules.json") -> Dict[str, List[str]]:
+def load_custom_rules(filename: str = "custom_rules.json"):
     """Load custom categorization rules from a JSON file."""
     import json
     try:
