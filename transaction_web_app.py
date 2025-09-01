@@ -607,11 +607,25 @@ def validate_financial_data(df: pd.DataFrame, expected_total: float = None) -> d
             validation_results['warnings'].append(f"Found {len(zero_amounts)} transactions with zero amounts")
         
         # 3. Duplicate detection (critical for financial accuracy)
-        duplicate_mask = df.duplicated(subset=['date', 'description', 'amount'], keep=False)
-        if duplicate_mask.any():
-            duplicates = df[duplicate_mask]
-            validation_results['warnings'].append(f"Found {len(duplicates)} duplicate transactions")
-            validation_results['recommended_actions'].append("Review and remove duplicate transactions")
+        try:
+            # Safe duplicate detection that handles mixed data types
+            duplicate_mask = df.duplicated(subset=['date', 'description', 'amount'], keep=False)
+            if duplicate_mask.any():
+                duplicates = df[duplicate_mask]
+                validation_results['warnings'].append(f"Found {len(duplicates)} duplicate transactions")
+                validation_results['recommended_actions'].append("Review and remove duplicate transactions")
+        except Exception as e:
+            # Fallback to string-based duplicate detection
+            try:
+                df_string = df.astype(str)
+                duplicate_mask = df_string.duplicated(subset=['date', 'description', 'amount'], keep=False)
+                if duplicate_mask.any():
+                    duplicates = df_string[duplicate_mask]
+                    validation_results['warnings'].append(f"Found {len(duplicates)} potential duplicate transactions (string-based detection)")
+                    validation_results['recommended_actions'].append("Review and remove duplicate transactions")
+            except Exception as e2:
+                validation_results['warnings'].append("Unable to detect duplicates due to data type complexity")
+                validation_results['recommended_actions'].append("Manual review of transactions recommended")
         
         # 4. Amount range validation
         min_amount = amounts.min()
@@ -703,12 +717,25 @@ def reconcile_financial_data(df: pd.DataFrame, expected_total: float) -> dict:
             # Check for common financial data issues
             
             # 1. Duplicate transactions
-            duplicate_mask = df.duplicated(subset=['date', 'description', 'amount'], keep=False)
-            if duplicate_mask.any():
-                duplicates = df[duplicate_mask]
-                duplicate_total = duplicates['amount'].abs().sum()
-                reconciliation['root_causes'].append(f"Duplicate transactions: {len(duplicates)} duplicates worth ¥{duplicate_total:,.0f}")
-                reconciliation['suggested_fixes'].append("Remove duplicate transactions")
+            try:
+                duplicate_mask = df.duplicated(subset=['date', 'description', 'amount'], keep=False)
+                if duplicate_mask.any():
+                    duplicates = df[duplicate_mask]
+                    duplicate_total = duplicates['amount'].abs().sum()
+                    reconciliation['root_causes'].append(f"Duplicate transactions: {len(duplicates)} duplicates worth ¥{duplicate_total:,.0f}")
+                    reconciliation['suggested_fixes'].append("Remove duplicate transactions")
+            except Exception as e:
+                # Fallback to string-based duplicate detection
+                try:
+                    df_string = df.astype(str)
+                    duplicate_mask = df_string.duplicated(subset=['date', 'description', 'amount'], keep=False)
+                    if duplicate_mask.any():
+                        duplicates = df_string[duplicate_mask]
+                        reconciliation['root_causes'].append(f"Potential duplicate transactions: {len(duplicates)} potential duplicates detected")
+                        reconciliation['suggested_fixes'].append("Review and remove duplicate transactions")
+                except Exception as e2:
+                    reconciliation['root_causes'].append("Unable to detect duplicates due to data type complexity")
+                    reconciliation['suggested_fixes'].append("Manual review of transactions recommended")
             
             # 2. Extreme amounts that might be errors
             extreme_amounts = df[df['amount'].abs() > 100000]
@@ -1270,16 +1297,33 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     st.success("✅ Data analysis activated. Check the details below.")
                 
                 if st.button("🧹 **Remove Duplicates**"):
-                    # Remove duplicate transactions
-                    df_no_duplicates = df.drop_duplicates(subset=['date', 'description', 'amount'])
-                    removed_count = len(df) - len(df_no_duplicates)
-                    if removed_count > 0:
-                        st.success(f"✅ Removed {removed_count} duplicate transactions")
-                        # Update the main dataframe
-                        df = df_no_duplicates
-                        st.rerun()
-                    else:
-                        st.info("ℹ️ No duplicates found to remove")
+                    # Safe duplicate removal that handles mixed data types
+                    try:
+                        df_no_duplicates = df.drop_duplicates(subset=['date', 'description', 'amount'])
+                        removed_count = len(df) - len(df_no_duplicates)
+                        if removed_count > 0:
+                            st.success(f"✅ Removed {removed_count} duplicate transactions")
+                            # Update the main dataframe
+                            df = df_no_duplicates
+                            st.rerun()
+                        else:
+                            st.info("ℹ️ No duplicates found to remove")
+                    except Exception as e:
+                        # Fallback to string-based duplicate removal
+                        try:
+                            df_string = df.astype(str)
+                            df_no_duplicates = df_string.drop_duplicates(subset=['date', 'description', 'amount'])
+                            removed_count = len(df) - len(df_no_duplicates)
+                            if removed_count > 0:
+                                st.success(f"✅ Removed {removed_count} potential duplicate transactions (string-based detection)")
+                                # Update the main dataframe
+                                df = df.iloc[df_string.drop_duplicates(subset=['date', 'description', 'amount']).index]
+                                st.rerun()
+                            else:
+                                st.info("ℹ️ No duplicates found to remove")
+                        except Exception as e2:
+                            st.error(f"❌ Unable to remove duplicates due to data type issues: {str(e2)}")
+                            st.info("💡 Try using the 'Reset to Raw Data' option and re-upload your file")
             
             with col2:
                 if st.button("📊 **Recalculate Totals**"):
@@ -1476,19 +1520,34 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 # Add detailed debugging for the mismatch
                 st.write("**🔍 Detailed Mismatch Analysis:**")
                 
-                # Check for potential data issues
-                st.write("**Data Quality Check:**")
-                st.write(f"**Total Transactions:** {len(df_cat)}")
-                st.write(f"**Unique Transactions:** {len(df_cat.drop_duplicates())}")
-                
-                # Check for duplicate amounts that might be causing inflation
-                amount_counts = df_cat['amount'].value_counts()
-                duplicate_amounts = amount_counts[amount_counts > 1]
-                if len(duplicate_amounts) > 0:
-                    st.warning(f"**Duplicate Amounts Found:** {len(duplicate_amounts)} amounts appear multiple times")
-                    st.write("**Top Duplicate Amounts:**")
-                    for amount, count in duplicate_amounts.head(5).items():
-                        st.write(f"  ¥{amount:,.0f}: {count} times")
+                        # Check for potential data issues
+        st.write("**Data Quality Check:**")
+        st.write(f"**Total Transactions:** {len(df_cat)}")
+        
+        # Safe duplicate detection that handles mixed data types
+        try:
+            # Convert to string representation for safe duplicate detection
+            df_string = df_cat.astype(str)
+            unique_count = len(df_string.drop_duplicates())
+            st.write(f"**Unique Transactions:** {unique_count}")
+            
+            if len(df_cat) != unique_count:
+                st.warning(f"**Potential Duplicates:** {len(df_cat) - unique_count} transactions may be duplicates")
+        except Exception as e:
+            st.warning(f"**Duplicate Check:** Unable to determine unique count due to data type issues")
+            st.write(f"**Error:** {str(e)}")
+        
+        # Check for duplicate amounts that might be causing inflation
+        try:
+            amount_counts = df_cat['amount'].value_counts()
+            duplicate_amounts = amount_counts[amount_counts > 1]
+            if len(duplicate_amounts) > 0:
+                st.warning(f"**Duplicate Amounts Found:** {len(duplicate_amounts)} amounts appear multiple times")
+                st.write("**Top Duplicate Amounts:**")
+                for amount, count in duplicate_amounts.head(5).items():
+                    st.write(f"  ¥{amount:,.0f}: {count} times")
+        except Exception as e:
+            st.warning("**Amount Analysis:** Unable to analyze duplicate amounts due to data type issues")
                 
                 # Check for extreme amounts that might be outliers
                 extreme_amounts = df_cat[df_cat['amount'].abs() > 100000]  # Amounts over ¥100,000
