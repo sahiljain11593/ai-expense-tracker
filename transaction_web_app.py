@@ -1548,27 +1548,27 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     st.write(f"  ¥{amount:,.0f}: {count} times")
         except Exception as e:
             st.warning("**Amount Analysis:** Unable to analyze duplicate amounts due to data type issues")
-                
-                # Check for extreme amounts that might be outliers
-                extreme_amounts = df_cat[df_cat['amount'].abs() > 100000]  # Amounts over ¥100,000
-                if len(extreme_amounts) > 0:
-                    st.warning(f"**Extreme Amounts Found:** {len(extreme_amounts)} transactions over ¥100,000")
-                    st.write("**Extreme Amounts:**")
-                    for idx, row in extreme_amounts.iterrows():
-                        st.write(f"  ¥{row['amount']:,.0f}: {row['description'][:30]}...")
-                
-                # Show transaction breakdown by type
-                st.write("**Transaction Type Breakdown:**")
-                type_breakdown = df_cat['transaction_type'].value_counts()
-                for trans_type, count in type_breakdown.items():
-                    type_total = df_cat[df_cat['transaction_type'] == trans_type]['amount'].abs().sum()
-                    st.write(f"  **{trans_type}:** {count} transactions, Total: ¥{type_total:,.0f}")
-                
-                # Add manual correction option
-                st.write("**🔧 Manual Correction:**")
-                if st.button("🔧 Force Correct Total (¥613,775)"):
-                    st.session_state['manual_total'] = 613775
-                    st.success("✅ Manual total set to ¥613,775. Check the financial summary above.")
+        
+        # Check for extreme amounts that might be outliers
+        extreme_amounts = df_cat[df_cat['amount'].abs() > 100000]  # Amounts over ¥100,000
+        if len(extreme_amounts) > 0:
+            st.warning(f"**Extreme Amounts Found:** {len(extreme_amounts)} transactions over ¥100,000")
+            st.write("**Extreme Amounts:**")
+            for idx, row in extreme_amounts.iterrows():
+                st.write(f"  ¥{row['amount']:,.0f}: {row['description'][:30]}...")
+        
+        # Show transaction breakdown by type
+        st.write("**Transaction Type Breakdown:**")
+        type_breakdown = df_cat['transaction_type'].value_counts()
+        for trans_type, count in type_breakdown.items():
+            type_total = df_cat[df_cat['transaction_type'] == trans_type]['amount'].abs().sum()
+            st.write(f"  **{trans_type}:** {count} transactions, Total: ¥{type_total:,.0f}")
+        
+        # Add manual correction option
+        st.write("**🔧 Manual Correction:**")
+        if st.button("🔧 Force Correct Total (¥613,775)"):
+            st.session_state['manual_total'] = 613775
+            st.success("✅ Manual total set to ¥613,775. Check the financial summary above.")
             
             # Alternative calculation methods for verification
             st.write("**🔍 Alternative Calculations:**")
