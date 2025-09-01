@@ -620,17 +620,20 @@ def detect_transaction_type(df: pd.DataFrame) -> pd.DataFrame:
         is_debit = any(keyword in description or keyword in original_desc for keyword in debit_keywords)
         
         # Determine transaction type based on keywords and amount sign
+        # For Japanese bank statements, most transactions are expenses (outflows)
         if is_credit and not is_debit:
             df.loc[idx, 'transaction_type'] = 'Credit'
         elif is_debit and not is_credit:
             df.loc[idx, 'transaction_type'] = 'Expense'
         else:
             # If no clear keyword match, use amount sign as indicator
-            # Negative amounts are typically expenses (debits), positive are credits (income)
+            # For Japanese bank statements: negative amounts = expenses (outflows)
             if amount < 0:
                 df.loc[idx, 'transaction_type'] = 'Expense'
             else:
-                df.loc[idx, 'transaction_type'] = 'Credit'
+                # Positive amounts could be either credits or expenses
+                # Default to Expense for Japanese bank statements (most common)
+                df.loc[idx, 'transaction_type'] = 'Expense'
         
         # Keep original amount value - don't change it
     
@@ -1083,12 +1086,16 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             expense_df = df_cat[df_cat['transaction_type'] == 'Expense']
             credit_df = df_cat[df_cat['transaction_type'] == 'Credit']
             
-            # For expenses, sum absolute values (expenses are typically negative in bank statements)
-            total_expenses = abs(expense_df['amount'].sum())
-            # For credits, sum positive values (credits are typically positive in bank statements)
-            total_credits = credit_df['amount'].sum()
+            # For Japanese bank statements, expenses are typically negative amounts
+            # We want to show the absolute value for display purposes
+            expense_amounts = expense_df['amount']
+            credit_amounts = credit_df['amount']
             
-            # Net amount calculation
+            # Calculate totals
+            total_expenses = abs(expense_amounts.sum())  # Convert negative to positive for display
+            total_credits = abs(credit_amounts.sum())   # Convert negative to positive for display
+            
+            # Net amount calculation (expenses - credits)
             net_amount = total_expenses - total_credits
             
             st.write("**Financial Summary:**")
@@ -1098,13 +1105,18 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             
             # Show raw amount totals for debugging
             st.write("**Raw Amounts (for verification):**")
-            st.write(f"🔴 **Expense Transactions:** {len(expense_df)} | Raw Sum: ¥{expense_df['amount'].sum():,.0f}")
-            st.write(f"🟢 **Credit Transactions:** {len(credit_df)} | Raw Sum: ¥{credit_df['amount'].sum():,.0f}")
+            st.write(f"🔴 **Expense Transactions:** {len(expense_df)} | Raw Sum: ¥{expense_amounts.sum():,.0f}")
+            st.write(f"🟢 **Credit Transactions:** {len(credit_df)} | Raw Sum: ¥{credit_amounts.sum():,.0f}")
             
             # Show total of all amounts (should match statement total)
             total_all_amounts = df_cat['amount'].sum()
             st.write(f"📊 **Total All Amounts:** ¥{total_all_amounts:,.0f}")
             st.write(f"📊 **Statement Total (should match):** ¥{abs(total_all_amounts):,.0f}")
+            
+            # Show transaction type distribution for debugging
+            st.write("**Transaction Type Distribution:**")
+            st.write(f"🔴 **Expenses:** {len(expense_df)} transactions")
+            st.write(f"🟢 **Credits:** {len(credit_df)} transactions")
         
         st.divider()
         
