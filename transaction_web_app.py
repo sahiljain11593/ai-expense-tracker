@@ -777,6 +777,12 @@ def main() -> None:
         "assign categories based on keyword rules and let you review the results."
     )
     
+    # Initialize session state for progress tracking
+    if 'categorization_progress' not in st.session_state:
+        st.session_state['categorization_progress'] = None
+    if 'progress_saved' not in st.session_state:
+        st.session_state['progress_saved'] = False
+    
     # Initialize Merchant Learning System
     learning_system = MerchantLearningSystem()
     st.sidebar.success("🧠 Merchant Learning System Active")
@@ -1148,7 +1154,30 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         # Smart categorization for uncategorized transactions
         if uncategorized_count > 0:
             st.subheader("🚀 Quick Categorization")
+            
+            # Show progress restoration if available
+            if st.session_state['progress_saved'] and st.session_state['categorization_progress']:
+                st.info("💾 **Saved Progress Available:** You can restore your previous categorization work.")
+                col1, col2 = st.columns([1, 1])
+                with col1:
+                    if st.button("🔄 Restore Saved Progress"):
+                        # Restore the saved progress
+                        restored_df = pd.DataFrame(st.session_state['categorization_progress'])
+                        df_cat.update(restored_df)
+                        st.session_state['progress_saved'] = False
+                        st.success("🔄 Progress restored! Your previous work has been loaded.")
+                        st.rerun()
+                with col2:
+                    if st.button("🗑️ Clear Saved Progress"):
+                        st.session_state['categorization_progress'] = None
+                        st.session_state['progress_saved'] = False
+                        st.success("🗑️ Saved progress cleared.")
+                        st.rerun()
+            
             st.write("Use the dropdowns below to quickly categorize uncategorized transactions:")
+            
+            # Add navigation hints
+            st.info("💡 **Navigation Tips:** Use the buttons below to save progress, skip categorization, or continue to review results.")
             
             # Get uncategorized transactions
             uncategorized_df = df_cat[df_cat['category'] == 'Uncategorised'].copy()
@@ -1255,7 +1284,23 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     # Update the category
                     df_cat.loc[idx, 'category'] = new_category
                 
-                submitted = st.form_submit_button("✅ Apply All Categorizations")
+                # Add navigation and progress options
+                col1, col2, col3 = st.columns([1, 1, 1])
+                
+                with col1:
+                    submitted = st.form_submit_button("✅ Apply All Categorizations")
+                
+                with col2:
+                    if st.form_submit_button("💾 Save Progress & Continue Later"):
+                        # Save current progress to session state
+                        st.session_state['categorization_progress'] = df_cat.to_dict('records')
+                        st.session_state['progress_saved'] = True
+                        st.success("💾 Progress saved! You can continue later.")
+                
+                with col3:
+                    if st.form_submit_button("⏭️ Skip & Review Results"):
+                        st.info("⏭️ Skipping categorization. Scroll down to review results.")
+                
                 if submitted:
                     # Learn from user corrections if smart learning is available
                     if learning_system:
@@ -1279,10 +1324,46 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     # Show learning feedback
                     if learning_system:
                         st.success("🧠 Smart Learning System has learned from your corrections!")
+                    
+                    # Show next steps
+                    st.info("🚀 **Next Steps:** Scroll down to review your categorized transactions and see the financial analysis!")
         
         # Show the final categorized data
         st.subheader("📋 Review All Transactions")
-        st.write("Final categorized transactions (you can still edit individual categories):")
+        
+        # Add quick navigation and progress indicator
+        col1, col2, col3 = st.columns([2, 1, 1])
+        
+        with col1:
+            st.write("Final categorized transactions (you can still edit individual categories):")
+        
+        with col2:
+            if st.button("📊 View Financial Summary"):
+                st.info("📊 Scroll down to see the financial summary and charts!")
+        
+        with col3:
+            if st.button("💾 Export Data"):
+                # Create downloadable CSV
+                csv = df_cat.to_csv(index=False)
+                st.download_button(
+                    label="📥 Download CSV",
+                    data=csv,
+                    file_name=f"categorized_transactions_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+                    mime="text/csv"
+                )
+        
+        # Show categorization progress
+        categorized_count = len(df_cat[df_cat['category'] != 'Uncategorised'])
+        total_count = len(df_cat)
+        progress_percentage = (categorized_count / total_count) * 100
+        
+        st.progress(progress_percentage / 100)
+        st.write(f"📈 **Categorization Progress:** {categorized_count}/{total_count} transactions categorized ({progress_percentage:.1f}%)")
+        
+        if progress_percentage < 100:
+            st.info(f"💡 **Tip:** You can go back to the categorization section above to complete the remaining {total_count - categorized_count} transactions.")
+        
+        st.divider()
         
         # Prepare data for display with better formatting
         display_df = df_cat.copy()
