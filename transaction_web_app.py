@@ -32,13 +32,7 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
-# Import smart learning system
-try:
-    from smart_learning_system import SmartLearningSystem
-    SMART_LEARNING_AVAILABLE = True
-except ImportError:
-    SMART_LEARNING_AVAILABLE = False
-    print("Smart learning system not available")
+# Smart Learning System (now using built-in MerchantLearningSystem class)
 
 try:
     import pdfplumber  # type: ignore
@@ -105,6 +99,24 @@ class MerchantLearningSystem:
                 return best_category, confidence
         
         return "Uncategorised", 0.0
+    
+    def predict_category(self, transaction_data: dict) -> tuple:
+        """Predict category for a transaction with confidence and breakdown."""
+        description = transaction_data.get('description', '')
+        original_description = transaction_data.get('original_description', '')
+        
+        # Get suggestion from learning system
+        suggested_category, confidence = self.suggest_category(description, original_description)
+        
+        # Create prediction breakdown
+        breakdown = {
+            'method': 'merchant_learning',
+            'confidence': confidence,
+            'merchant': self._extract_merchant(description),
+            'suggested_category': suggested_category
+        }
+        
+        return suggested_category, confidence, breakdown
     
     def _extract_merchant(self, description: str) -> str:
         """Extract merchant name from transaction description."""
@@ -701,7 +713,18 @@ def apply_smart_categorization(df: pd.DataFrame, learning_system,
         }
         
         # Get smart prediction
-        predicted_category, confidence, breakdown = learning_system.predict_category(transaction_data)
+        try:
+            if learning_system:
+                predicted_category, confidence, breakdown = learning_system.predict_category(transaction_data)
+            else:
+                predicted_category = "Uncategorised"
+                confidence = 0.0
+                breakdown = {'method': 'fallback', 'confidence': 0.0}
+        except Exception as e:
+            # Fallback to basic categorization if learning system fails
+            predicted_category = "Uncategorised"
+            confidence = 0.0
+            breakdown = {'method': 'fallback', 'confidence': 0.0, 'error': str(e)}
         
         # Apply subcategory if available
         predicted_subcategory = ""
@@ -756,13 +779,9 @@ def main() -> None:
         "assign categories based on keyword rules and let you review the results."
     )
     
-    # Initialize Smart Learning System
-    if SMART_LEARNING_AVAILABLE:
-        learning_system = SmartLearningSystem()
-        st.sidebar.success("🧠 Smart Learning System Active")
-    else:
-        learning_system = None
-        st.sidebar.warning("⚠️ Smart Learning System Not Available")
+    # Initialize Merchant Learning System
+    learning_system = MerchantLearningSystem()
+    st.sidebar.success("🧠 Merchant Learning System Active")
     
     # AI Translation Setup
     st.sidebar.header("🤖 AI Translation Settings")
