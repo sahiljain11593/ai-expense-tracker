@@ -1722,6 +1722,10 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     elif any(word in original_desc for word in ['モバイルパス', '交通']):
                         suggested_category = "Transportation"
                     
+                    # Ensure suggested category is in the list
+                    if suggested_category not in all_categories:
+                        suggested_category = "Uncategorised"
+                    
                     col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 2, 1, 1, 1, 1])
                     with col1:
                         # Show transaction date
@@ -1739,12 +1743,23 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                         else:
                             st.write("**No original description**")
                     with col3:
-                        new_category = st.selectbox(
-                            f"Category for {row['description'][:25]}...",
-                            all_categories,
-                            index=all_categories.index(suggested_category),
-                            key=f"cat_{idx}"
-                        )
+                        try:
+                            # Safe index finding with fallback
+                            suggested_index = all_categories.index(suggested_category) if suggested_category in all_categories else 0
+                            new_category = st.selectbox(
+                                f"Category for {row['description'][:25]}...",
+                                all_categories,
+                                index=suggested_index,
+                                key=f"cat_{idx}"
+                            )
+                        except (ValueError, IndexError):
+                            # Fallback to first category if there's any issue
+                            new_category = st.selectbox(
+                                f"Category for {row['description'][:25]}...",
+                                all_categories,
+                                index=0,
+                                key=f"cat_{idx}"
+                            )
                     with col4:
                         st.write(f"**¥{row['amount']:,}**")
                     with col5:
@@ -1789,16 +1804,12 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     submitted = st.form_submit_button("✅ Apply All Categorizations")
                 
                 with col2:
-                    if st.form_submit_button("💾 Save Progress & Continue Later"):
-                        # Save current progress to session state
-                        st.session_state['categorization_progress'] = df_cat.to_dict('records')
-                        st.session_state['progress_saved'] = True
-                        st.success("💾 Progress saved! You can continue later.")
+                    save_progress = st.form_submit_button("💾 Save Progress & Continue Later")
                 
                 with col3:
-                    if st.form_submit_button("⏭️ Skip & Review Results"):
-                        st.info("⏭️ Skipping categorization. Scroll down to review results.")
+                    skip_categorization = st.form_submit_button("⏭️ Skip & Review Results")
                 
+                # Handle form submissions
                 if submitted:
                     # Learn from user corrections if smart learning is available
                     if learning_system:
@@ -1825,6 +1836,15 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     
                     # Show next steps
                     st.info("🚀 **Next Steps:** Scroll down to review your categorized transactions and see the financial analysis!")
+                
+                elif save_progress:
+                    # Save current progress to session state
+                    st.session_state['categorization_progress'] = df_cat.to_dict('records')
+                    st.session_state['progress_saved'] = True
+                    st.success("💾 Progress saved! You can continue later.")
+                
+                elif skip_categorization:
+                    st.info("⏭️ Skipping categorization. Scroll down to review results.")
         
         # Show the final categorized data
         st.subheader("📋 Review All Transactions")
