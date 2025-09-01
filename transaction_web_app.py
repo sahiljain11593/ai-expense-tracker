@@ -837,19 +837,23 @@ def main() -> None:
         # Show learning statistics
         stats = learning_system.get_learning_stats()
         st.sidebar.write(f"**Total Corrections:** {stats['total_corrections']}")
-        st.sidebar.write(f"**Merchant Patterns:** {stats['merchant_patterns']}")
-        st.sidebar.write(f"**Models Trained:** {'Yes' if stats['models_trained'] else 'No'}")
-        st.sidebar.write(f"**Last Training:** {stats['last_training']}")
+        st.sidebar.write(f"**Unique Merchants:** {stats['unique_merchants']}")
+        st.sidebar.write(f"**Recent Corrections:** {stats['recent_corrections']}")
         
-        # Training options
-        with st.sidebar.expander("🚀 Training Options"):
-            if st.button("Train Models"):
-                if 'df_cat' in locals() and not df_cat.empty:
-                    with st.spinner("Training models..."):
-                        learning_system.train_models(df_cat)
-                    st.success("Models trained successfully!")
-                else:
-                    st.warning("Upload data first to train models")
+        # Show merchant learning progress
+        if stats['merchant_categories']:
+            st.sidebar.write("**Learning Progress:**")
+            for merchant, categories in list(stats['merchant_categories'].items())[:5]:  # Show first 5
+                if merchant != "unknown":
+                    category_names = list(categories.keys())
+                    st.sidebar.write(f"• {merchant[:20]}: {category_names[0] if category_names else 'None'}")
+        
+        # Show confidence scores
+        if stats['confidence_scores']:
+            st.sidebar.write("**Confidence Levels:**")
+            high_confidence = sum(1 for merchant_scores in stats['confidence_scores'].values() 
+                                for score in merchant_scores.values() if score >= 0.8)
+            st.sidebar.write(f"• High Confidence: {high_confidence}")
     
     # File upload
     uploaded_file = st.file_uploader("Choose a statement file", 
