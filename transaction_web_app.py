@@ -53,6 +53,114 @@ except ImportError:
     Image = None
 
 
+class MerchantLearningSystem:
+    """Learning system that improves categorization based on user feedback."""
+    
+    def __init__(self):
+        self.merchant_categories = {}  # merchant -> category mapping
+        self.merchant_patterns = {}    # merchant patterns -> category mapping
+        self.user_corrections = []     # track user corrections for analysis
+        self.confidence_scores = {}    # confidence level for each merchant
+    
+    def learn_from_user_feedback(self, transaction_id: str, old_category: str, new_category: str, transaction_data: dict):
+        """Learn from user corrections to improve future categorizations."""
+        merchant = self._extract_merchant(transaction_data['description'])
+        original_desc = transaction_data.get('original_description', '')
+        
+        # Store the correction
+        correction = {
+            'transaction_id': transaction_id,
+            'merchant': merchant,
+            'old_category': old_category,
+            'new_category': new_category,
+            'description': transaction_data['description'],
+            'original_description': original_desc,
+            'amount': transaction_data['amount'],
+            'timestamp': pd.Timestamp.now()
+        }
+        self.user_corrections.append(correction)
+        
+        # Update merchant category mapping
+        if merchant not in self.merchant_categories:
+            self.merchant_categories[merchant] = {}
+        
+        if new_category not in self.merchant_categories[merchant]:
+            self.merchant_categories[merchant][new_category] = 0
+        
+        self.merchant_categories[merchant][new_category] += 1
+        
+        # Update confidence scores
+        self._update_confidence(merchant, new_category)
+    
+    def suggest_category(self, description: str, original_description: str = "") -> tuple:
+        """Suggest category based on learned patterns."""
+        merchant = self._extract_merchant(description)
+        
+        if merchant in self.merchant_categories:
+            # Get the most frequently used category for this merchant
+            categories = self.merchant_categories[merchant]
+            if categories:
+                best_category = max(categories, key=categories.get)
+                confidence = self.confidence_scores.get(merchant, {}).get(best_category, 0.5)
+                return best_category, confidence
+        
+        return "Uncategorised", 0.0
+    
+    def _extract_merchant(self, description: str) -> str:
+        """Extract merchant name from transaction description."""
+        # Remove common prefixes and suffixes
+        description = description.lower()
+        
+        # Common patterns to remove
+        patterns_to_remove = [
+            r'visa\s+domestic\s+use\s+vs\s+',
+            r'credit\s+card\s+',
+            r'debit\s+card\s+',
+            r'atm\s+',
+            r'pos\s+',
+            r'\d+',  # Remove numbers
+            r'[^\w\s]',  # Remove special characters
+        ]
+        
+        merchant = description
+        for pattern in patterns_to_remove:
+            merchant = re.sub(pattern, '', merchant)
+        
+        # Clean up whitespace
+        merchant = ' '.join(merchant.split())
+        
+        return merchant if merchant else "unknown"
+    
+    def _update_confidence(self, merchant: str, category: str):
+        """Update confidence score for merchant-category pair."""
+        if merchant not in self.confidence_scores:
+            self.confidence_scores[merchant] = {}
+        
+        if category not in self.confidence_scores[merchant]:
+            self.confidence_scores[merchant][category] = 0.5
+        
+        # Increase confidence with each correction
+        current_confidence = self.confidence_scores[merchant][category]
+        self.confidence_scores[merchant][category] = min(0.95, current_confidence + 0.1)
+    
+    def get_learning_stats(self) -> dict:
+        """Get statistics about the learning system."""
+        total_corrections = len(self.user_corrections)
+        unique_merchants = len(self.merchant_categories)
+        
+        # Calculate accuracy improvement
+        recent_corrections = [c for c in self.user_corrections 
+                            if (pd.Timestamp.now() - c['timestamp']).days < 30]
+        
+        return {
+            'total_corrections': total_corrections,
+            'unique_merchants': unique_merchants,
+            'recent_corrections': len(recent_corrections),
+            'merchant_categories': self.merchant_categories,
+            'confidence_scores': self.confidence_scores
+        }
+
+
 def extract_transactions_from_pdf(file_stream: io.BytesIO) -> pd.DataFrame:
     """Extract transactions from a PDF statement using pdfplumber.
 
@@ -371,6 +479,109 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
     st.success(f"✅ Successfully processed {len(transactions)} transactions!")
     df_result = pd.DataFrame(transactions)
     return df_result
+
+def validate_transaction_data(df: pd.DataFrame) -> dict:
+    """Comprehensive data validation for transaction data."""
+    validation_results = {
+        'is_valid': True,
+        'warnings': [],
+        'errors': [],
+        'duplicates': [],
+        'anomalies': []
+    }
+    
+    try:
+        # Check for duplicate transactions
+        duplicate_mask = df.duplicated(subset=['date', 'description', 'amount'], keep=False)
+        if duplicate_mask.any():
+            duplicates = df[duplicate_mask]
+            validation_results['duplicates'] = duplicates.to_dict('records')
+            validation_results['warnings'].append(f"Found {len(duplicates)} duplicate transactions")
+        
+        # Check for amount anomalies
+        if 'amount' in df.columns:
+            amounts = df['amount']
+            mean_amount = amounts.mean()
+            std_amount = amounts.std()
+            
+            # Detect amounts that are 3 standard deviations from mean
+            anomaly_mask = abs(amounts - mean_amount) > (3 * std_amount)
+            if anomaly_mask.any():
+                anomalies = df[anomaly_mask]
+                validation_results['anomalies'] = anomalies.to_dict('records')
+                validation_results['warnings'].append(f"Found {len(anomalies)} transactions with unusual amounts")
+            
+            # Check for zero amounts
+            zero_amounts = df[amounts == 0]
+            if len(zero_amounts) > 0:
+                validation_results['warnings'].append(f"Found {len(zero_amounts)} transactions with zero amounts")
+        
+        # Check date range validity
+        if 'date' in df.columns:
+            dates = pd.to_datetime(df['date'])
+            min_date = dates.min()
+            max_date = dates.max()
+            current_date = pd.Timestamp.now()
+            
+            # Check for future dates
+            future_dates = df[dates > current_date]
+            if len(future_dates) > 0:
+                validation_results['warnings'].append(f"Found {len(future_dates)} transactions with future dates")
+            
+            # Check for very old dates (more than 10 years ago)
+            ten_years_ago = current_date - pd.DateOffset(years=10)
+            old_dates = df[dates < ten_years_ago]
+            if len(old_dates) > 0:
+                validation_results['warnings'].append(f"Found {len(old_dates)} transactions older than 10 years")
+        
+        # Check for missing critical data
+        missing_descriptions = df[df['description'].isna() | (df['description'] == '')]
+        if len(missing_descriptions) > 0:
+            validation_results['errors'].append(f"Found {len(missing_descriptions)} transactions with missing descriptions")
+            validation_results['is_valid'] = False
+        
+        missing_amounts = df[df['amount'].isna()]
+        if len(missing_amounts) > 0:
+            validation_results['errors'].append(f"Found {len(missing_amounts)} transactions with missing amounts")
+            validation_results['is_valid'] = False
+        
+        # Check for extreme amounts (suspicious transactions)
+        if 'amount' in df.columns:
+            amounts = df['amount']
+            # Flag amounts over ¥1,000,000 as potentially suspicious
+            large_amounts = df[abs(amounts) > 1000000]
+            if len(large_amounts) > 0:
+                validation_results['warnings'].append(f"Found {len(large_amounts)} transactions with amounts over ¥1,000,000")
+        
+    except Exception as e:
+        validation_results['errors'].append(f"Validation error: {str(e)}")
+        validation_results['is_valid'] = False
+    
+    return validation_results
+
+def calculate_running_balance(df: pd.DataFrame) -> pd.DataFrame:
+    """Calculate running balance for transactions."""
+    df_balance = df.copy()
+    
+    # Sort by date to ensure chronological order
+    df_balance = df_balance.sort_values('date')
+    
+    # Initialize running balance
+    running_balance = 0
+    balance_history = []
+    
+    for idx, row in df_balance.iterrows():
+        amount = row['amount']
+        
+        # Add to running balance
+        running_balance += amount
+        balance_history.append(running_balance)
+    
+    # Add running balance column
+    df_balance['running_balance'] = balance_history
+    
+    return df_balance
+
 def detect_transaction_type(df: pd.DataFrame) -> pd.DataFrame:
     """Detect and classify transactions as credit (income) or debit (expense)."""
     
@@ -635,6 +846,10 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         except Exception as e:
             st.error(f"Error processing file: {e}")
             return
+        
+        # Initialize learning system
+        learning_system = MerchantLearningSystem()
+        
         # Show loading animation during processing
         with st.spinner("🔄 Processing transactions and applying smart categorization..."):
             # MoneyMgr Proven Categorization System (Based on 3,943+ real transactions)
@@ -744,6 +959,39 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         
         # Close the loading spinner
         st.success(f"✅ Successfully processed {len(df)} transactions!")
+        
+        # Data validation and quality check
+        st.subheader("🔍 Data Validation & Quality Check")
+        validation_results = validate_transaction_data(df_cat)
+        
+        if validation_results['is_valid']:
+            st.success("✅ Data validation passed!")
+        else:
+            st.error("❌ Data validation failed!")
+            for error in validation_results['errors']:
+                st.error(f"Error: {error}")
+        
+        # Show warnings if any
+        if validation_results['warnings']:
+            st.warning("⚠️ Data quality warnings:")
+            for warning in validation_results['warnings']:
+                st.warning(warning)
+        
+        # Show duplicates if found
+        if validation_results['duplicates']:
+            st.warning(f"🔍 Found {len(validation_results['duplicates'])} duplicate transactions")
+            if st.checkbox("Show duplicate transactions"):
+                duplicates_df = pd.DataFrame(validation_results['duplicates'])
+                st.dataframe(duplicates_df)
+        
+        # Show anomalies if found
+        if validation_results['anomalies']:
+            st.warning(f"🚨 Found {len(validation_results['anomalies'])} transactions with unusual amounts")
+            if st.checkbox("Show anomalous transactions"):
+                anomalies_df = pd.DataFrame(validation_results['anomalies'])
+                st.dataframe(anomalies_df)
+        
+        st.divider()
         
         # Smart categorization interface
         st.subheader("🎯 Smart Transaction Categorization")
@@ -993,6 +1241,31 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 lambda x: x.strftime('%Y-%m-%d') if pd.notna(x) and hasattr(x, 'strftime') else x
             )
         
+        # Calculate and display running balance
+        st.subheader("💰 Running Balance Analysis")
+        balance_df = calculate_running_balance(df_cat)
+        
+        # Show balance trend
+        if len(balance_df) > 1:
+            balance_chart = balance_df[['date', 'running_balance']].copy()
+            balance_chart['date'] = pd.to_datetime(balance_chart['date'])
+            balance_chart = balance_chart.sort_values('date')
+            
+            st.line_chart(balance_chart.set_index('date'))
+            
+            # Show current balance
+            current_balance = balance_df['running_balance'].iloc[-1]
+            st.info(f"💳 **Current Balance:** ¥{current_balance:,.0f}")
+            
+            # Show balance statistics
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📈 Highest Balance", f"¥{balance_df['running_balance'].max():,.0f}")
+            with col2:
+                st.metric("📉 Lowest Balance", f"¥{balance_df['running_balance'].min():,.0f}")
+            with col3:
+                st.metric("📊 Average Balance", f"¥{balance_df['running_balance'].mean():,.0f}")
+        
         # Use data editor for final review
         edited_df = st.data_editor(display_df, num_rows="dynamic")
         
@@ -1005,6 +1278,25 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             st.write(summary)
             pivot = summary.pivot(index="month", columns="category", values="total_amount").fillna(0)
             st.bar_chart(pivot)
+        
+        # Show learning system statistics
+        if learning_system:
+            st.subheader("🧠 Smart Learning System Statistics")
+            learning_stats = learning_system.get_learning_stats()
+            
+            col1, col2, col3 = st.columns(3)
+            with col1:
+                st.metric("📚 Total Corrections", learning_stats['total_corrections'])
+            with col2:
+                st.metric("🏪 Unique Merchants", learning_stats['unique_merchants'])
+            with col3:
+                st.metric("🔄 Recent Corrections", learning_stats['recent_corrections'])
+            
+            if learning_stats['merchant_categories']:
+                st.write("**Merchant Learning Database:**")
+                for merchant, categories in learning_stats['merchant_categories'].items():
+                    if merchant != "unknown":
+                        st.write(f"• **{merchant}**: {list(categories.keys())}")
 
 
 if __name__ == "__main__":
