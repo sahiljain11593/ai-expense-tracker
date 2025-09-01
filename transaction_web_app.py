@@ -390,10 +390,6 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
         with col3:
             amount_col = st.selectbox("Amount column:", df.columns, index=2)
     
-    # Show column mapping in a clean format
-    time_info = f", Time='{time_col}'" if time_col else ""
-    st.info(f"📋 **Column Mapping:** Date='{date_col}', Description='{desc_col}', Amount='{amount_col}'{time_info}")
-    
     # Process the data with progress bar
     st.write("🔄 **Processing transactions...**")
     
