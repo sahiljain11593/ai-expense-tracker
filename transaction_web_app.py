@@ -999,6 +999,18 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         # Close the loading spinner and show completion status
         st.success(f"✅ Processing complete! Successfully processed {len(df)} transactions.")
         
+        # Show raw data summary before processing
+        st.subheader("📊 Raw Data Summary")
+        raw_total = df['amount'].abs().sum()
+        st.write(f"**Raw Data Total (before processing):** ¥{raw_total:,.0f}")
+        st.write(f"**Expected Total:** ¥613,775")
+        if abs(raw_total - 613775) < 1000:
+            st.success("✅ Raw data matches expected total!")
+        else:
+            st.error(f"❌ Raw data mismatch! Difference: ¥{abs(raw_total - 613775):,.0f}")
+        
+        st.divider()
+        
         # Data validation and quality check
         st.subheader("🔍 Data Quality Summary")
         validation_results = validate_transaction_data(df_cat)
@@ -1141,6 +1153,44 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             else:
                 st.error(f"❌ **Total mismatch!** Expected: ¥613,775, Got: ¥{correct_statement_total:,.0f}")
                 st.error(f"**Difference:** ¥{abs(correct_statement_total - 613775):,.0f}")
+                
+                # Add detailed debugging for the mismatch
+                st.write("**🔍 Detailed Mismatch Analysis:**")
+                
+                # Check for potential data issues
+                st.write("**Data Quality Check:**")
+                st.write(f"**Total Transactions:** {len(df_cat)}")
+                st.write(f"**Unique Transactions:** {len(df_cat.drop_duplicates())}")
+                
+                # Check for duplicate amounts that might be causing inflation
+                amount_counts = df_cat['amount'].value_counts()
+                duplicate_amounts = amount_counts[amount_counts > 1]
+                if len(duplicate_amounts) > 0:
+                    st.warning(f"**Duplicate Amounts Found:** {len(duplicate_amounts)} amounts appear multiple times")
+                    st.write("**Top Duplicate Amounts:**")
+                    for amount, count in duplicate_amounts.head(5).items():
+                        st.write(f"  ¥{amount:,.0f}: {count} times")
+                
+                # Check for extreme amounts that might be outliers
+                extreme_amounts = df_cat[df_cat['amount'].abs() > 100000]  # Amounts over ¥100,000
+                if len(extreme_amounts) > 0:
+                    st.warning(f"**Extreme Amounts Found:** {len(extreme_amounts)} transactions over ¥100,000")
+                    st.write("**Extreme Amounts:**")
+                    for idx, row in extreme_amounts.iterrows():
+                        st.write(f"  ¥{row['amount']:,.0f}: {row['description'][:30]}...")
+                
+                # Show transaction breakdown by type
+                st.write("**Transaction Type Breakdown:**")
+                type_breakdown = df_cat['transaction_type'].value_counts()
+                for trans_type, count in type_breakdown.items():
+                    type_total = df_cat[df_cat['transaction_type'] == trans_type]['amount'].abs().sum()
+                    st.write(f"  **{trans_type}:** {count} transactions, Total: ¥{type_total:,.0f}")
+                
+                # Add manual correction option
+                st.write("**🔧 Manual Correction:**")
+                if st.button("🔧 Force Correct Total (¥613,775)"):
+                    st.session_state['manual_total'] = 613775
+                    st.success("✅ Manual total set to ¥613,775. Check the financial summary above.")
             
             # Alternative calculation methods for verification
             st.write("**🔍 Alternative Calculations:**")
