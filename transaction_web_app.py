@@ -979,35 +979,63 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         st.success(f"✅ Processing complete! Successfully processed {len(df)} transactions.")
         
         # Data validation and quality check
-        st.subheader("🔍 Data Validation & Quality Check")
+        st.subheader("🔍 Data Quality Summary")
         validation_results = validate_transaction_data(df_cat)
         
-        if validation_results['is_valid']:
-            st.success("✅ Data validation passed!")
-        else:
-            st.error("❌ Data validation failed!")
-            for error in validation_results['errors']:
-                st.error(f"Error: {error}")
+        # Create a clean summary using columns
+        col1, col2, col3 = st.columns(3)
         
-        # Show warnings if any
-        if validation_results['warnings']:
-            st.warning("⚠️ Data quality warnings:")
-            for warning in validation_results['warnings']:
-                st.warning(warning)
+        with col1:
+            if validation_results['is_valid']:
+                st.success("✅ **Validation Passed**")
+            else:
+                st.error("❌ **Validation Failed**")
         
-        # Show duplicates if found
-        if validation_results['duplicates']:
-            st.warning(f"🔍 Found {len(validation_results['duplicates'])} duplicate transactions")
-            if st.checkbox("Show duplicate transactions"):
-                duplicates_df = pd.DataFrame(validation_results['duplicates'])
-                st.dataframe(duplicates_df)
+        with col2:
+            if validation_results['duplicates']:
+                st.warning(f"🔍 **{len(validation_results['duplicates'])} Duplicates**")
+            else:
+                st.success("✅ **No Duplicates**")
         
-        # Show anomalies if found
-        if validation_results['anomalies']:
-            st.warning(f"🚨 Found {len(validation_results['anomalies'])} transactions with unusual amounts")
-            if st.checkbox("Show anomalous transactions"):
-                anomalies_df = pd.DataFrame(validation_results['anomalies'])
-                st.dataframe(anomalies_df)
+        with col3:
+            if validation_results['anomalies']:
+                st.warning(f"🚨 **{len(validation_results['anomalies'])} Anomalies**")
+            else:
+                st.success("✅ **No Anomalies**")
+        
+        # Show detailed issues only if they exist
+        has_issues = (validation_results['duplicates'] or 
+                     validation_results['anomalies'] or 
+                     validation_results['warnings'] or 
+                     not validation_results['is_valid'])
+        
+        if has_issues:
+            with st.expander("📋 **View Details**", expanded=False):
+                # Show errors if any
+                if not validation_results['is_valid']:
+                    st.error("**Critical Issues:**")
+                    for error in validation_results['errors']:
+                        st.error(f"• {error}")
+                
+                # Show duplicates if found
+                if validation_results['duplicates']:
+                    st.warning(f"**Duplicate Transactions ({len(validation_results['duplicates'])}):**")
+                    if st.checkbox("Show duplicate transactions", key="show_duplicates"):
+                        duplicates_df = pd.DataFrame(validation_results['duplicates'])
+                        st.dataframe(duplicates_df)
+                
+                # Show anomalies if found
+                if validation_results['anomalies']:
+                    st.warning(f"**Unusual Amounts ({len(validation_results['anomalies'])}):**")
+                    if st.checkbox("Show anomalous transactions", key="show_anomalies"):
+                        anomalies_df = pd.DataFrame(validation_results['anomalies'])
+                        st.dataframe(anomalies_df)
+                
+                # Show other warnings
+                if validation_results['warnings']:
+                    st.info("**Other Warnings:**")
+                    for warning in validation_results['warnings']:
+                        st.info(f"• {warning}")
         
         st.divider()
         
