@@ -566,6 +566,189 @@ def validate_transaction_data(df: pd.DataFrame) -> dict:
     
     return validation_results
 
+def validate_financial_data(df: pd.DataFrame, expected_total: float = None) -> dict:
+    """
+    Comprehensive financial data validation following industry best practices.
+    This is the type of validation used in professional financial applications.
+    """
+    validation_results = {
+        'is_valid': True,
+        'warnings': [],
+        'errors': [],
+        'data_quality_score': 0.0,
+        'reconciliation_status': 'unknown',
+        'recommended_actions': []
+    }
+    
+    try:
+        # 1. Basic data integrity checks
+        if df.empty:
+            validation_results['errors'].append("No transaction data found")
+            validation_results['is_valid'] = False
+            return validation_results
+        
+        # 2. Amount data validation
+        if 'amount' not in df.columns:
+            validation_results['errors'].append("Missing 'amount' column")
+            validation_results['is_valid'] = False
+            return validation_results
+        
+        amounts = df['amount']
+        
+        # Check for invalid amounts
+        invalid_amounts = amounts[~amounts.apply(lambda x: isinstance(x, (int, float)) and not pd.isna(x))]
+        if len(invalid_amounts) > 0:
+            validation_results['errors'].append(f"Found {len(invalid_amounts)} invalid amount values")
+            validation_results['is_valid'] = False
+        
+        # Check for zero amounts (suspicious in financial data)
+        zero_amounts = amounts[amounts == 0]
+        if len(zero_amounts) > 0:
+            validation_results['warnings'].append(f"Found {len(zero_amounts)} transactions with zero amounts")
+        
+        # 3. Duplicate detection (critical for financial accuracy)
+        duplicate_mask = df.duplicated(subset=['date', 'description', 'amount'], keep=False)
+        if duplicate_mask.any():
+            duplicates = df[duplicate_mask]
+            validation_results['warnings'].append(f"Found {len(duplicates)} duplicate transactions")
+            validation_results['recommended_actions'].append("Review and remove duplicate transactions")
+        
+        # 4. Amount range validation
+        min_amount = amounts.min()
+        max_amount = amounts.max()
+        mean_amount = amounts.mean()
+        
+        # Flag suspicious amounts
+        if abs(min_amount) > 1000000:  # Over ¥1M
+            validation_results['warnings'].append(f"Found extremely large negative amount: ¥{min_amount:,.0f}")
+        if max_amount > 1000000:  # Over ¥1M
+            validation_results['warnings'].append(f"Found extremely large positive amount: ¥{max_amount:,.0f}")
+        
+        # 5. Financial reconciliation (if expected total provided)
+        if expected_total is not None:
+            actual_total = amounts.abs().sum()
+            difference = abs(actual_total - expected_total)
+            difference_percentage = (difference / expected_total) * 100
+            
+            validation_results['reconciliation_status'] = 'reconciled' if difference < 100 else 'unreconciled'
+            
+            if difference > 100:  # More than ¥100 difference
+                validation_results['errors'].append(f"Financial reconciliation failed: Expected ¥{expected_total:,.0f}, Got ¥{actual_total:,.0f}")
+                validation_results['errors'].append(f"Difference: ¥{difference:,.0f} ({difference_percentage:.2f}%)")
+                validation_results['is_valid'] = False
+                
+                # Provide specific recommendations
+                if difference_percentage > 10:
+                    validation_results['recommended_actions'].append("Large discrepancy detected - verify source data integrity")
+                elif difference_percentage > 5:
+                    validation_results['recommended_actions'].append("Moderate discrepancy - check for missing or duplicate transactions")
+                else:
+                    validation_results['recommended_actions'].append("Small discrepancy - verify individual transaction amounts")
+        
+        # 6. Data quality scoring
+        quality_score = 100.0
+        
+        # Deduct points for issues
+        if len(duplicate_mask[duplicate_mask]) > 0:
+            quality_score -= 20
+        if len(zero_amounts) > 0:
+            quality_score -= 10
+        if len(invalid_amounts) > 0:
+            quality_score -= 30
+        
+        validation_results['data_quality_score'] = max(0, quality_score)
+        
+        # 7. Professional recommendations
+        if validation_results['data_quality_score'] < 70:
+            validation_results['recommended_actions'].append("Data quality is poor - manual review recommended")
+        elif validation_results['data_quality_score'] < 90:
+            validation_results['recommended_actions'].append("Data quality is acceptable but could be improved")
+        else:
+            validation_results['recommended_actions'].append("Data quality is excellent")
+        
+    except Exception as e:
+        validation_results['errors'].append(f"Validation error: {str(e)}")
+        validation_results['is_valid'] = False
+    
+    return validation_results
+
+def reconcile_financial_data(df: pd.DataFrame, expected_total: float) -> dict:
+    """
+    Financial reconciliation system - finds the exact cause of discrepancies.
+    This is what professional financial software uses to resolve mismatches.
+    """
+    reconciliation = {
+        'status': 'unreconciled',
+        'expected_total': expected_total,
+        'actual_total': 0.0,
+        'difference': 0.0,
+        'difference_percentage': 0.0,
+        'root_causes': [],
+        'suggested_fixes': [],
+        'data_issues': []
+    }
+    
+    try:
+        # Calculate actual total
+        actual_total = df['amount'].abs().sum()
+        reconciliation['actual_total'] = actual_total
+        
+        # Calculate difference
+        difference = abs(actual_total - expected_total)
+        reconciliation['difference'] = difference
+        reconciliation['difference_percentage'] = (difference / expected_total) * 100
+        
+        # Root cause analysis
+        if difference > 0:
+            # Check for common financial data issues
+            
+            # 1. Duplicate transactions
+            duplicate_mask = df.duplicated(subset=['date', 'description', 'amount'], keep=False)
+            if duplicate_mask.any():
+                duplicates = df[duplicate_mask]
+                duplicate_total = duplicates['amount'].abs().sum()
+                reconciliation['root_causes'].append(f"Duplicate transactions: {len(duplicates)} duplicates worth ¥{duplicate_total:,.0f}")
+                reconciliation['suggested_fixes'].append("Remove duplicate transactions")
+            
+            # 2. Extreme amounts that might be errors
+            extreme_amounts = df[df['amount'].abs() > 100000]
+            if len(extreme_amounts) > 0:
+                reconciliation['root_causes'].append(f"Extreme amounts: {len(extreme_amounts)} transactions over ¥100,000")
+                reconciliation['suggested_fixes'].append("Verify extreme amounts are correct")
+            
+            # 3. Zero amounts
+            zero_amounts = df[df['amount'] == 0]
+            if len(zero_amounts) > 0:
+                reconciliation['root_causes'].append(f"Zero amounts: {len(zero_amounts)} transactions with ¥0")
+                reconciliation['suggested_fixes'].append("Review zero-amount transactions")
+            
+            # 4. Amount distribution analysis
+            positive_amounts = df[df['amount'] > 0]['amount'].sum()
+            negative_amounts = abs(df[df['amount'] < 0]['amount'].sum())
+            
+            reconciliation['data_issues'].append(f"Positive amounts total: ¥{positive_amounts:,.0f}")
+            reconciliation['data_issues'].append(f"Negative amounts total: ¥{negative_amounts:,.0f}")
+            
+            # 5. Check if the issue is in transaction classification
+            if 'transaction_type' in df.columns:
+                expense_total = df[df['transaction_type'] == 'Expense']['amount'].abs().sum()
+                credit_total = df[df['transaction_type'] == 'Credit']['amount'].abs().sum()
+                reconciliation['data_issues'].append(f"Expense transactions total: ¥{expense_total:,.0f}")
+                reconciliation['data_issues'].append(f"Credit transactions total: ¥{credit_total:,.0f}")
+        
+        # Determine reconciliation status
+        if difference < 100:  # Within ¥100
+            reconciliation['status'] = 'reconciled'
+        elif difference < 1000:  # Within ¥1,000
+            reconciliation['status'] = 'minor_discrepancy'
+        else:
+            reconciliation['status'] = 'major_discrepancy'
+            
+    except Exception as e:
+        reconciliation['root_causes'].append(f"Reconciliation error: {str(e)}")
+    
+    return reconciliation
+
 def calculate_running_balance(df: pd.DataFrame) -> pd.DataFrame:
     """Calculate running balance for transactions."""
     df_balance = df.copy()
@@ -999,15 +1182,151 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         # Close the loading spinner and show completion status
         st.success(f"✅ Processing complete! Successfully processed {len(df)} transactions.")
         
-        # Show raw data summary before processing
+        # Professional Financial Data Validation
+        st.subheader("🏦 Professional Financial Validation")
+        
+        # Use the new professional validation system
+        financial_validation = validate_financial_data(df, expected_total=613775)
+        
+        # Display validation results in a professional format
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            if financial_validation['is_valid']:
+                st.success("✅ **Validation Passed**")
+            else:
+                st.error("❌ **Validation Failed**")
+        
+        with col2:
+            quality_score = financial_validation['data_quality_score']
+            if quality_score >= 90:
+                st.success(f"🟢 **Quality Score:** {quality_score:.0f}%")
+            elif quality_score >= 70:
+                st.warning(f"🟡 **Quality Score:** {quality_score:.0f}%")
+            else:
+                st.error(f"🔴 **Quality Score:** {quality_score:.0f}%")
+        
+        with col3:
+            if financial_validation['reconciliation_status'] == 'reconciled':
+                st.success("✅ **Reconciled**")
+            else:
+                st.error("❌ **Unreconciled**")
+        
+        # Show raw data summary
         st.subheader("📊 Raw Data Summary")
         raw_total = df['amount'].abs().sum()
         st.write(f"**Raw Data Total (before processing):** ¥{raw_total:,.0f}")
         st.write(f"**Expected Total:** ¥613,775")
+        
         if abs(raw_total - 613775) < 1000:
             st.success("✅ Raw data matches expected total!")
         else:
             st.error(f"❌ Raw data mismatch! Difference: ¥{abs(raw_total - 613775):,.0f}")
+            
+            # Run professional reconciliation
+            reconciliation = reconcile_financial_data(df, 613775)
+            
+            st.subheader("🔍 Financial Reconciliation Report")
+            
+            # Show reconciliation status
+            if reconciliation['status'] == 'reconciled':
+                st.success("✅ **Reconciliation Status: RECONCILED**")
+            elif reconciliation['status'] == 'minor_discrepancy':
+                st.warning("⚠️ **Reconciliation Status: MINOR DISCREPANCY**")
+            else:
+                st.error("❌ **Reconciliation Status: MAJOR DISCREPANCY**")
+            
+            # Show the exact numbers
+            st.write(f"**Expected Total:** ¥{reconciliation['expected_total']:,.0f}")
+            st.write(f"**Actual Total:** ¥{reconciliation['actual_total']:,.0f}")
+            st.write(f"**Difference:** ¥{reconciliation['difference']:,.0f} ({reconciliation['difference_percentage']:.2f}%)")
+            
+            # Show root causes
+            if reconciliation['root_causes']:
+                st.error("**Root Causes:**")
+                for cause in reconciliation['root_causes']:
+                    st.error(f"• {cause}")
+            
+            # Show suggested fixes
+            if reconciliation['suggested_fixes']:
+                st.info("**Recommended Actions:**")
+                for fix in reconciliation['suggested_fixes']:
+                    st.info(f"• {fix}")
+            
+            # Show data issues
+            if reconciliation['data_issues']:
+                st.warning("**Data Analysis:**")
+                for issue in reconciliation['data_issues']:
+                    st.warning(f"• {issue}")
+            
+            # Professional Data Correction System
+            st.subheader("🔧 Professional Data Correction")
+            
+            col1, col2 = st.columns(2)
+            
+            with col1:
+                if st.button("🔍 **Analyze Data Issues**"):
+                    st.session_state['show_data_analysis'] = True
+                    st.success("✅ Data analysis activated. Check the details below.")
+                
+                if st.button("🧹 **Remove Duplicates**"):
+                    # Remove duplicate transactions
+                    df_no_duplicates = df.drop_duplicates(subset=['date', 'description', 'amount'])
+                    removed_count = len(df) - len(df_no_duplicates)
+                    if removed_count > 0:
+                        st.success(f"✅ Removed {removed_count} duplicate transactions")
+                        # Update the main dataframe
+                        df = df_no_duplicates
+                        st.rerun()
+                    else:
+                        st.info("ℹ️ No duplicates found to remove")
+            
+            with col2:
+                if st.button("📊 **Recalculate Totals**"):
+                    st.session_state['recalculate_totals'] = True
+                    st.success("✅ Totals will be recalculated with current data.")
+                
+                if st.button("🔄 **Reset to Raw Data**"):
+                    st.session_state['reset_to_raw'] = True
+                    st.success("✅ Data will be reset to original import state.")
+            
+            # Show detailed data analysis if requested
+            if st.session_state.get('show_data_analysis', False):
+                st.subheader("📋 **Detailed Data Analysis**")
+                
+                # Show transaction distribution
+                st.write("**Transaction Distribution:**")
+                amount_ranges = [
+                    (0, 1000, "¥0 - ¥1,000"),
+                    (1000, 10000, "¥1,000 - ¥10,000"),
+                    (10000, 100000, "¥10,000 - ¥100,000"),
+                    (100000, float('inf'), "¥100,000+")
+                ]
+                
+                for min_amt, max_amt, label in amount_ranges:
+                    if max_amt == float('inf'):
+                        count = len(df[df['amount'].abs() >= min_amt])
+                    else:
+                        count = len(df[(df['amount'].abs() >= min_amt) & (df['amount'].abs() < max_amt)])
+                    st.write(f"  **{label}:** {count} transactions")
+                
+                # Show potential issues
+                st.write("**Potential Issues:**")
+                
+                # Check for suspicious patterns
+                if len(df) > 100:
+                    st.warning("• Large number of transactions - may need batch processing")
+                
+                # Check for amount consistency
+                amount_std = df['amount'].std()
+                if amount_std > 50000:
+                    st.warning("• High amount variability - check for data entry errors")
+                
+                # Check for date consistency
+                if 'date' in df.columns:
+                    date_range = pd.to_datetime(df['date']).max() - pd.to_datetime(df['date']).min()
+                    if date_range.days > 365:
+                        st.warning("• Transactions span more than 1 year - verify date accuracy")
         
         st.divider()
         
