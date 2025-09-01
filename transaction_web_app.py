@@ -395,7 +395,7 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
     st.info(f"📋 **Column Mapping:** Date='{date_col}', Description='{desc_col}', Amount='{amount_col}'{time_info}")
     
     # Process the data with progress bar
-    st.write("🔄 **Processing transactions and translating Japanese text...**")
+    st.write("🔄 **Processing transactions...**")
     
     # Create progress bar
     progress_bar = st.progress(0)
@@ -488,7 +488,6 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
     progress_bar.empty()
     status_text.empty()
     
-    st.success(f"✅ Successfully processed {len(transactions)} transactions!")
     df_result = pd.DataFrame(transactions)
     return df_result
 
@@ -980,8 +979,8 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             # Fallback to basic categorization
             df_cat = categorise_transactions(df, rules, subcategories)
         
-        # Close the loading spinner
-        st.success(f"✅ Successfully processed {len(df)} transactions!")
+        # Close the loading spinner and show completion status
+        st.success(f"✅ Processing complete! Successfully processed {len(df)} transactions.")
         
         # Data validation and quality check
         st.subheader("🔍 Data Validation & Quality Check")
