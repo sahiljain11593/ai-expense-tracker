@@ -1251,13 +1251,8 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             else:
                 st.warning("⚠️ **Reconciliation pending**")
         
-        # Show raw data summary
-        st.subheader("📊 Raw Data Summary")
-        raw_total = df['amount'].abs().sum()
-        st.write(f"**Raw Data Total (before processing):** ¥{raw_total:,.0f}")
-        
-        # Remove hard-coded expected total; show only computed totals
-        # Run reconciliation only if a user-provided expected total is supplied later (skipped for now)
+        # Remove raw data summary; totals will be presented once below
+        # Run reconciliation only if a user-provided expected total is supplied later (skipped)
         
         st.divider()
         
@@ -1372,8 +1367,8 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             credit_amounts = credit_df['amount']
             
             # Calculate totals - this is where the issue might be
-            total_expenses = abs(expense_amounts.sum())  # Convert negative to positive for display
-            total_credits = abs(credit_amounts.sum())   # Convert negative to positive for display
+            total_expenses = abs(expense_amounts.sum())
+            total_credits = abs(credit_amounts.sum())
             
             # Net amount calculation (expenses - credits)
             net_amount = total_expenses - total_credits
@@ -1383,23 +1378,6 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             st.write(f"🟢 **Total Credits:** ¥{total_credits:,.0f}")
             st.write(f"💰 **Net Amount:** ¥{net_amount:,.0f}")
             
-            # Show raw amount totals for debugging
-            st.write("**Raw Amounts (for verification):**")
-            st.write(f"🔴 **Expense Transactions:** {len(expense_df)} | Raw Sum: ¥{expense_amounts.sum():,.0f}")
-            st.write(f"🟢 **Credit Transactions:** {len(credit_df)} | Raw Sum: ¥{credit_amounts.sum():,.0f}")
-            
-            # Show total of all amounts (should match statement total)
-            total_all_amounts = df_cat['amount'].sum()
-            st.write(f"📊 **Total All Amounts:** ¥{total_all_amounts:,.0f}")
-            
-            # The correct statement total should be the sum of absolute values
-            # This is how bank statements typically work
-            correct_statement_total = df_cat['amount'].abs().sum()
-            st.write(f"📊 **Statement Total (should match):** ¥{correct_statement_total:,.0f}")
-            
-            # Check if this matches your expected amount
-            # Remove hard-coded expected total checks and mismatch debug
-                
                         # Check for potential data issues
         st.write("**Data Quality Check:**")
         st.write(f"**Total Transactions:** {len(df_cat)}")
