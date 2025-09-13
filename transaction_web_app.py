@@ -1696,6 +1696,52 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 elif skip_categorization:
                     st.info("⏭️ Skipping categorization. Scroll down to review results.")
         
+        # Category filter & review
+        st.subheader("🔎 Category Filter & Review")
+        try:
+            available_categories = sorted([c for c in df_cat['category'].dropna().unique().tolist()])
+        except Exception:
+            available_categories = []
+        selected_categories = st.multiselect(
+            "Filter by category",
+            options=available_categories,
+            default=available_categories
+        )
+
+        filtered_df = df_cat[df_cat['category'].isin(selected_categories)].copy() if selected_categories else df_cat.copy()
+
+        # Attach row id for safe updates
+        filtered_df['_row_id'] = filtered_df.index
+
+        # Compact summary for the filtered view
+        st.write(
+            f"Rows: {len(filtered_df)} | Total (abs): ¥{filtered_df['amount'].abs().sum():,.0f}"
+        )
+
+        # Editable view for quick verification and corrections
+        edited_filtered = st.data_editor(
+            filtered_df[
+                ['date', 'description', 'original_description', 'amount', 'transaction_type', 'category', 'subcategory', '_row_id']
+            ],
+            num_rows="dynamic",
+            key="category_filter_editor",
+            disabled=[False, False, False, True, True, False, False, True]
+        )
+
+        # Apply edits back to the master dataframe
+        if st.button("✅ Apply Filtered Edits"):
+            try:
+                for _, r in edited_filtered.iterrows():
+                    row_id = r.get('_row_id')
+                    if row_id in df_cat.index:
+                        if 'category' in r:
+                            df_cat.loc[row_id, 'category'] = r['category']
+                        if 'subcategory' in r:
+                            df_cat.loc[row_id, 'subcategory'] = r['subcategory']
+                st.success("✔️ Applied edits to selected rows.")
+            except Exception as e:
+                st.error(f"Failed to apply edits: {e}")
+
         # Show the final categorized data
         st.subheader("📋 Review All Transactions")
         
