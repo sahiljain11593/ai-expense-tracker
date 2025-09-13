@@ -1612,6 +1612,14 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             f"Rows: {len(filtered_df)} | Total (abs): ¥{filtered_df['amount'].abs().sum():,.0f}"
         )
 
+        # Column width control for long text
+        desc_width_choice = st.select_slider(
+            "Description column width",
+            options=["small", "medium", "large"],
+            value="large",
+            help="Adjust how wide description columns render in the table"
+        )
+
         # Editable view for quick verification and corrections
         edited_filtered = st.data_editor(
             filtered_df[
@@ -1622,10 +1630,33 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             disabled=[False, False, False, True, True, False, False, True],
             use_container_width=True,
             column_config={
-                'description': st.column_config.TextColumn('Description', width='large'),
-                'original_description': st.column_config.TextColumn('Original (Japanese)', width='large')
+                'description': st.column_config.TextColumn('Description', width=desc_width_choice),
+                'original_description': st.column_config.TextColumn('Original (Japanese)', width=desc_width_choice)
             }
         )
+
+        # Optional wide read-only view with manual column resizing (drag column edges)
+        if st.checkbox("Open wide read-only view (manual column resizing)"):
+            st.dataframe(
+                filtered_df[['date','description','original_description','amount','transaction_type','category','subcategory']]
+                .rename(columns={'original_description':'Original (Japanese)'}),
+                use_container_width=True
+            )
+
+        # Quick full-text preview for selected row
+        with st.expander("Preview full text for a specific row"):
+            try:
+                row_options = filtered_df.index.astype(str).tolist()
+            except Exception:
+                row_options = []
+            selected_row = st.selectbox("Select row index", options=row_options) if row_options else None
+            if selected_row is not None:
+                idx = int(selected_row)
+                st.write("Description:")
+                st.code(str(filtered_df.loc[idx, 'description']))
+                if 'original_description' in filtered_df.columns:
+                    st.write("Original (Japanese):")
+                    st.code(str(filtered_df.loc[idx, 'original_description']))
 
         # Apply edits back to the master dataframe
         if st.button("✅ Apply Filtered Edits"):
@@ -1719,13 +1750,18 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 st.metric("📊 Average Balance", f"¥{balance_df['running_balance'].mean():,.0f}")
         
         # Use data editor for final review
+        final_desc_width = st.select_slider(
+            "Description column width (final table)",
+            options=["small", "medium", "large"],
+            value="large"
+        )
         edited_df = st.data_editor(
             display_df,
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                'description': st.column_config.TextColumn('Description', width='large'),
-                'original_description': st.column_config.TextColumn('Original (Japanese)', width='large')
+                'description': st.column_config.TextColumn('Description', width=final_desc_width),
+                'original_description': st.column_config.TextColumn('Original (Japanese)', width=final_desc_width)
             }
         )
         
