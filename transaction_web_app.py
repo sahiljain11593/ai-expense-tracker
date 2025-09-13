@@ -1257,9 +1257,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         st.write(f"**Raw Data Total (before processing):** ¥{raw_total:,.0f}")
         
         # Remove hard-coded expected total; show only computed totals
-        
         # Run reconciliation only if a user-provided expected total is supplied later (skipped for now)
-        # (Removed Financial Reconciliation Report block)
         
         st.divider()
         
@@ -1449,52 +1447,52 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         # Add manual correction option
         st.write("**🔧 Manual Correction:**")
         # Remove manual override for hard-coded expected total
-            
-            # Alternative calculation methods for verification
-            st.write("**🔍 Alternative Calculations:**")
-            
-            # Method 1: Sum of absolute values (most likely correct for bank statements)
-            total_abs = df_cat['amount'].abs().sum()
-            st.write(f"**Method 1 - Sum of Absolute Values:** ¥{total_abs:,.0f}")
-            
-            # Method 2: Sum of positive amounts only
-            positive_amounts = df_cat[df_cat['amount'] > 0]['amount'].sum()
-            st.write(f"**Method 2 - Sum of Positive Amounts:** ¥{positive_amounts:,.0f}")
-            
-            # Method 3: Sum of negative amounts (absolute)
-            negative_amounts = abs(df_cat[df_cat['amount'] < 0]['amount'].sum())
-            st.write(f"**Method 3 - Sum of Negative Amounts (abs):** ¥{negative_amounts:,.0f}")
-            
-            # Method 4: Simple sum of all amounts
-            simple_sum = df_cat['amount'].sum()
-            st.write(f"**Method 4 - Simple Sum:** ¥{simple_sum:,.0f}")
-            
-            # Method 5: Force correct total for verification
-            st.write("**🔧 Manual Override (for testing):**")
-            # Removed manual override controls
-            
-            # Show transaction type distribution for debugging
-            st.write("**Transaction Type Distribution:**")
-            st.write(f"🔴 **Expenses:** {len(expense_df)} transactions")
-            st.write(f"🟢 **Credits:** {len(credit_df)} transactions")
-            
-            # Add comprehensive debugging information
-            st.write("**🔍 Debug Information:**")
-            # Removed expected vs current comparison
-            
-            # Show sample of amounts to understand the data
-            if len(df_cat) > 0:
-                st.write("**Sample Amounts (first 5):**")
-                sample_amounts = df_cat['amount'].head(5)
-                for i, amount in enumerate(sample_amounts):
-                    st.write(f"  {i+1}. ¥{amount:,.0f}")
-            
-            # Show amount statistics
-            st.write("**Amount Statistics:**")
-            st.write(f"**Min Amount:** ¥{df_cat['amount'].min():,.0f}")
-            st.write(f"**Max Amount:** ¥{df_cat['amount'].max():,.0f}")
-            st.write(f"**Mean Amount:** ¥{df_cat['amount'].mean():,.0f}")
-            st.write(f"**Total Transactions:** {len(df_cat)}")
+
+        # Alternative calculation methods for verification
+        st.write("**🔍 Alternative Calculations:**")
+
+        # Method 1: Sum of absolute values (most likely correct for bank statements)
+        total_abs = df_cat['amount'].abs().sum()
+        st.write(f"**Method 1 - Sum of Absolute Values:** ¥{total_abs:,.0f}")
+
+        # Method 2: Sum of positive amounts only
+        positive_amounts = df_cat[df_cat['amount'] > 0]['amount'].sum()
+        st.write(f"**Method 2 - Sum of Positive Amounts:** ¥{positive_amounts:,.0f}")
+
+        # Method 3: Sum of negative amounts (absolute)
+        negative_amounts = abs(df_cat[df_cat['amount'] < 0]['amount'].sum())
+        st.write(f"**Method 3 - Sum of Negative Amounts (abs):** ¥{negative_amounts:,.0f}")
+
+        # Method 4: Simple sum of all amounts
+        simple_sum = df_cat['amount'].sum()
+        st.write(f"**Method 4 - Simple Sum:** ¥{simple_sum:,.0f}")
+
+        # Method 5: Force correct total for verification
+        st.write("**🔧 Manual Override (for testing):**")
+        # Removed manual override controls
+
+        # Show transaction type distribution for debugging
+        st.write("**Transaction Type Distribution:**")
+        st.write(f"🔴 **Expenses:** {len(expense_df)} transactions")
+        st.write(f"🟢 **Credits:** {len(credit_df)} transactions")
+
+        # Add comprehensive debugging information
+        st.write("**🔍 Debug Information:**")
+        # Removed expected vs current comparison
+
+        # Show sample of amounts to understand the data
+        if len(df_cat) > 0:
+            st.write("**Sample Amounts (first 5):**")
+            sample_amounts = df_cat['amount'].head(5)
+            for i, amount in enumerate(sample_amounts):
+                st.write(f"  {i+1}. ¥{amount:,.0f}")
+
+        # Show amount statistics
+        st.write("**Amount Statistics:**")
+        st.write(f"**Min Amount:** ¥{df_cat['amount'].min():,.0f}")
+        st.write(f"**Max Amount:** ¥{df_cat['amount'].max():,.0f}")
+        st.write(f"**Mean Amount:** ¥{df_cat['amount'].mean():,.0f}")
+        st.write(f"**Total Transactions:** {len(df_cat)}")
         
         st.divider()
         
