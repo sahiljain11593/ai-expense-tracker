@@ -150,7 +150,8 @@ def load_pdf_files(paths: List[str]) -> pd.DataFrame:
     def extract_transactions_from_pdf_bytes(pdf_bytes: bytes) -> pd.DataFrame:
         transactions = []
         with pdfplumber.open(io.BytesIO(pdf_bytes)) as pdf:
-            for page in pdf.pages[:5]:
+            # Pass 1: try tables
+            for page in pdf.pages[:10]:
                 try:
                     tables = page.extract_tables() or []
                 except Exception:
@@ -177,7 +178,7 @@ def load_pdf_files(paths: List[str]) -> pd.DataFrame:
                             amt_raw = str(row[amt_idx]).strip()
                             # Parse date
                             parsed_date = None
-                            for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y"):
+                            for fmt in ("%d/%m/%Y", "%Y-%m-%d", "%Y/%m/%d", "%m/%d/%Y", "%Y.%m.%d"):
                                 try:
                                     parsed_date = datetime.strptime(date_raw, fmt)
                                     break
@@ -198,6 +199,56 @@ def load_pdf_files(paths: List[str]) -> pd.DataFrame:
                             continue
                 if transactions:
                     break
+
+            # Pass 2: regex lines fallback if no table transactions
+            if not transactions:
+                for page in pdf.pages[:10]:
+                    try:
+                        text = page.extract_text(x_tolerance=1, y_tolerance=1) or ""
+                    except Exception:
+                        text = page.extract_text() or ""
+                    if not text:
+                        continue
+                    for raw_line in text.splitlines():
+                        line = raw_line.strip()
+                        if not line:
+                            continue
+                        # Match a date, then some text, then an amount (¥ optional)
+                        m = re.search(
+                            r"(\d{4}[/-]\d{1,2}[/-]\d{1,2}|\d{1,2}/\d{1,2}/\d{4}|\d{4}年\d{1,2}月\d{1,2}日)\s+(.+?)\s+([\u00a5¥]?-?[0-9]+(?:,[0-9]{3})*(?:\.[0-9]+)?(?:円)?)$",
+                            line
+                        )
+                        if not m:
+                            # Try variant: amount first or at beginning
+                            continue
+                        date_raw, desc_raw, amt_raw = m.groups()
+                        # Parse date
+                        parsed_date = None
+                        for fmt in ("%Y-%m-%d", "%Y/%m/%d", "%d/%m/%Y", "%m/%d/%Y"):
+                            try:
+                                parsed_date = datetime.strptime(date_raw, fmt)
+                                break
+                            except Exception:
+                                pass
+                        if parsed_date is None and "年" in date_raw:
+                            try:
+                                # Convert Japanese style YYYY年MM月DD日
+                                date_clean = (
+                                    date_raw.replace("年", "/").replace("月", "/").replace("日", "")
+                                )
+                                parsed_date = pd.to_datetime(date_clean, errors="coerce")
+                            except Exception:
+                                parsed_date = pd.NaT
+                        # Parse amount
+                        amt_clean = re.sub(r"[^0-9\-\.]+", "", amt_raw)
+                        try:
+                            amount_val = float(amt_clean)
+                        except Exception:
+                            amount_val = float("nan")
+                        if pd.isna(parsed_date) or pd.isna(amount_val) or not desc_raw:
+                            continue
+                        transactions.append({"date": parsed_date, "description": desc_raw, "amount": amount_val})
+
         return pd.DataFrame(transactions)
 
     frames = []
