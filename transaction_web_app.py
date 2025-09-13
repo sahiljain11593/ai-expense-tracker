@@ -1243,10 +1243,13 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 st.error(f"🔴 **Quality Score:** {quality_score:.0f}%")
         
         with col3:
-            if financial_validation['reconciliation_status'] == 'reconciled':
+            rec_status = financial_validation.get('reconciliation_status', 'unknown')
+            if rec_status == 'reconciled':
                 st.success("✅ **Reconciled**")
+            elif rec_status == 'unknown':
+                st.info("ℹ️ **Reconciliation not checked**")
             else:
-                st.error("❌ **Unreconciled**")
+                st.warning("⚠️ **Reconciliation pending**")
         
         # Show raw data summary
         st.subheader("📊 Raw Data Summary")
@@ -1256,110 +1259,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         # Remove hard-coded expected total; show only computed totals
         
         # Run reconciliation only if a user-provided expected total is supplied later (skipped for now)
-        reconciliation = None
-            
-            st.subheader("🔍 Financial Reconciliation Report")
-            
-            # Show reconciliation status
-            # Skipped status since reconciliation is disabled without expected total
-            
-            # Show the exact numbers
-            # Skipped expected total/difference output
-            
-            # Show root causes
-            # Skipped root causes
-            
-            # Show suggested fixes
-            # Skipped suggested fixes
-            
-            # Show data issues
-            # Skipped data issues
-            
-            # Professional Data Correction System
-            st.subheader("🔧 Professional Data Correction")
-            
-            col1, col2 = st.columns(2)
-            
-            with col1:
-                if st.button("🔍 **Analyze Data Issues**"):
-                    st.session_state['show_data_analysis'] = True
-                    st.success("✅ Data analysis activated. Check the details below.")
-                
-                if st.button("🧹 **Remove Duplicates**"):
-                    # Safe duplicate removal that handles mixed data types
-                    try:
-                        df_no_duplicates = df.drop_duplicates(subset=['date', 'description', 'amount'])
-                        removed_count = len(df) - len(df_no_duplicates)
-                        if removed_count > 0:
-                            st.success(f"✅ Removed {removed_count} duplicate transactions")
-                            # Update the main dataframe
-                            df = df_no_duplicates
-                            st.rerun()
-                        else:
-                            st.info("ℹ️ No duplicates found to remove")
-                    except Exception as e:
-                        # Fallback to string-based duplicate removal
-                        try:
-                            df_string = df.astype(str)
-                            df_no_duplicates = df_string.drop_duplicates(subset=['date', 'description', 'amount'])
-                            removed_count = len(df) - len(df_no_duplicates)
-                            if removed_count > 0:
-                                st.success(f"✅ Removed {removed_count} potential duplicate transactions (string-based detection)")
-                                # Update the main dataframe
-                                df = df.iloc[df_string.drop_duplicates(subset=['date', 'description', 'amount']).index]
-                                st.rerun()
-                            else:
-                                st.info("ℹ️ No duplicates found to remove")
-                        except Exception as e2:
-                            st.error(f"❌ Unable to remove duplicates due to data type issues: {str(e2)}")
-                            st.info("💡 Try using the 'Reset to Raw Data' option and re-upload your file")
-            
-            with col2:
-                if st.button("📊 **Recalculate Totals**"):
-                    st.session_state['recalculate_totals'] = True
-                    st.success("✅ Totals will be recalculated with current data.")
-                
-                if st.button("🔄 **Reset to Raw Data**"):
-                    st.session_state['reset_to_raw'] = True
-                    st.success("✅ Data will be reset to original import state.")
-            
-            # Show detailed data analysis if requested
-            if st.session_state.get('show_data_analysis', False):
-                st.subheader("📋 **Detailed Data Analysis**")
-                
-                # Show transaction distribution
-                st.write("**Transaction Distribution:**")
-                amount_ranges = [
-                    (0, 1000, "¥0 - ¥1,000"),
-                    (1000, 10000, "¥1,000 - ¥10,000"),
-                    (10000, 100000, "¥10,000 - ¥100,000"),
-                    (100000, float('inf'), "¥100,000+")
-                ]
-                
-                for min_amt, max_amt, label in amount_ranges:
-                    if max_amt == float('inf'):
-                        count = len(df[df['amount'].abs() >= min_amt])
-                    else:
-                        count = len(df[(df['amount'].abs() >= min_amt) & (df['amount'].abs() < max_amt)])
-                    st.write(f"  **{label}:** {count} transactions")
-                
-                # Show potential issues
-                st.write("**Potential Issues:**")
-                
-                # Check for suspicious patterns
-                if len(df) > 100:
-                    st.warning("• Large number of transactions - may need batch processing")
-                
-                # Check for amount consistency
-                amount_std = df['amount'].std()
-                if amount_std > 50000:
-                    st.warning("• High amount variability - check for data entry errors")
-                
-                # Check for date consistency
-                if 'date' in df.columns:
-                    date_range = pd.to_datetime(df['date']).max() - pd.to_datetime(df['date']).min()
-                    if date_range.days > 365:
-                        st.warning("• Transactions span more than 1 year - verify date accuracy")
+        # (Removed Financial Reconciliation Report block)
         
         st.divider()
         
