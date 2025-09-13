@@ -344,7 +344,7 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
     desc_columns = ['description', 'merchant', 'payee', 'transaction_description', 'details',
                     '利用店名・商品名', '店舗名', '商品名', '取引内容']
     amount_columns = ['amount', 'debit', 'credit', 'transaction_amount', 'amount_debited', 'amount_credited',
-                      '利用金額', '支払金額', '取引金額']
+                      '支払総額', '利用金額', '支払金額', '取引金額']
     time_columns = ['time', 'transaction_time', 'time_posted', 'timestamp', '取引時刻', '利用時刻', '決済時刻']
     
     # Find the actual column names in the CSV
@@ -355,7 +355,8 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
     
     for col in df.columns:
         col_lower = col.lower().strip()
-        col_original = col.strip()
+        # Normalize quotes and BOM for exact-name checks in Japanese
+        col_original = col.strip().lstrip('\ufeff').strip('"').strip("'")
         
         # Check English column names
         if col_lower in [name.lower() for name in date_columns]:
@@ -376,6 +377,14 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             amount_col = col
         elif col_original in time_columns:
             time_col = col
+
+    # Prefer 支払総額 when available
+    if amount_col:
+        for col in df.columns:
+            col_norm = col.strip().lstrip('\ufeff').strip('"').strip("'")
+            if col_norm == '支払総額':
+                amount_col = col
+                break
     
     if not all([date_col, desc_col, amount_col]):
         # If we can't find the expected columns, show available columns and let user choose
