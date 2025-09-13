@@ -1221,8 +1221,8 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         # Professional Financial Data Validation
         st.subheader("🏦 Professional Financial Validation")
         
-        # Use the new professional validation system
-        financial_validation = validate_financial_data(df, expected_total=613775)
+        # Use the new professional validation system (no expected total)
+        financial_validation = validate_financial_data(df, expected_total=None)
         
         # Display validation results in a professional format
         col1, col2, col3 = st.columns(3)
@@ -1252,48 +1252,28 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         st.subheader("📊 Raw Data Summary")
         raw_total = df['amount'].abs().sum()
         st.write(f"**Raw Data Total (before processing):** ¥{raw_total:,.0f}")
-        st.write(f"**Expected Total:** ¥613,775")
         
-        if abs(raw_total - 613775) < 1000:
-            st.success("✅ Raw data matches expected total!")
-        else:
-            st.error(f"❌ Raw data mismatch! Difference: ¥{abs(raw_total - 613775):,.0f}")
-            
-            # Run professional reconciliation
-            reconciliation = reconcile_financial_data(df, 613775)
+        # Remove hard-coded expected total; show only computed totals
+        
+        # Run reconciliation only if a user-provided expected total is supplied later (skipped for now)
+        reconciliation = None
             
             st.subheader("🔍 Financial Reconciliation Report")
             
             # Show reconciliation status
-            if reconciliation['status'] == 'reconciled':
-                st.success("✅ **Reconciliation Status: RECONCILED**")
-            elif reconciliation['status'] == 'minor_discrepancy':
-                st.warning("⚠️ **Reconciliation Status: MINOR DISCREPANCY**")
-            else:
-                st.error("❌ **Reconciliation Status: MAJOR DISCREPANCY**")
+            # Skipped status since reconciliation is disabled without expected total
             
             # Show the exact numbers
-            st.write(f"**Expected Total:** ¥{reconciliation['expected_total']:,.0f}")
-            st.write(f"**Actual Total:** ¥{reconciliation['actual_total']:,.0f}")
-            st.write(f"**Difference:** ¥{reconciliation['difference']:,.0f} ({reconciliation['difference_percentage']:.2f}%)")
+            # Skipped expected total/difference output
             
             # Show root causes
-            if reconciliation['root_causes']:
-                st.error("**Root Causes:**")
-                for cause in reconciliation['root_causes']:
-                    st.error(f"• {cause}")
+            # Skipped root causes
             
             # Show suggested fixes
-            if reconciliation['suggested_fixes']:
-                st.info("**Recommended Actions:**")
-                for fix in reconciliation['suggested_fixes']:
-                    st.info(f"• {fix}")
+            # Skipped suggested fixes
             
             # Show data issues
-            if reconciliation['data_issues']:
-                st.warning("**Data Analysis:**")
-                for issue in reconciliation['data_issues']:
-                    st.warning(f"• {issue}")
+            # Skipped data issues
             
             # Professional Data Correction System
             st.subheader("🔧 Professional Data Correction")
@@ -1520,14 +1500,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             st.write(f"📊 **Statement Total (should match):** ¥{correct_statement_total:,.0f}")
             
             # Check if this matches your expected amount
-            if abs(correct_statement_total - 613775) < 1000:  # Within ¥1,000
-                st.success(f"✅ **Total matches expected amount!** ¥{correct_statement_total:,.0f}")
-            else:
-                st.error(f"❌ **Total mismatch!** Expected: ¥613,775, Got: ¥{correct_statement_total:,.0f}")
-                st.error(f"**Difference:** ¥{abs(correct_statement_total - 613775):,.0f}")
-                
-                # Add detailed debugging for the mismatch
-                st.write("**🔍 Detailed Mismatch Analysis:**")
+            # Remove hard-coded expected total checks and mismatch debug
                 
                         # Check for potential data issues
         st.write("**Data Quality Check:**")
@@ -1575,9 +1548,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         
         # Add manual correction option
         st.write("**🔧 Manual Correction:**")
-        if st.button("🔧 Force Correct Total (¥613,775)"):
-            st.session_state['manual_total'] = 613775
-            st.success("✅ Manual total set to ¥613,775. Check the financial summary above.")
+        # Remove manual override for hard-coded expected total
             
             # Alternative calculation methods for verification
             st.write("**🔍 Alternative Calculations:**")
@@ -1600,11 +1571,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             
             # Method 5: Force correct total for verification
             st.write("**🔧 Manual Override (for testing):**")
-            st.write(f"**Expected Total:** ¥613,775")
-            if st.button("🔧 Force Correct Total"):
-                st.session_state['force_correct_total'] = True
-                st.success("✅ Manual override activated. The total should now show ¥613,775")
-                st.rerun()
+            # Removed manual override controls
             
             # Show transaction type distribution for debugging
             st.write("**Transaction Type Distribution:**")
@@ -1613,9 +1580,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             
             # Add comprehensive debugging information
             st.write("**🔍 Debug Information:**")
-            st.write(f"**Expected Total:** ¥613,775")
-            st.write(f"**Current Total:** ¥{abs(total_all_amounts):,.0f}")
-            st.write(f"**Difference:** ¥{abs(total_all_amounts) - 613775:,.0f}")
+            # Removed expected vs current comparison
             
             # Show sample of amounts to understand the data
             if len(df_cat) > 0:
