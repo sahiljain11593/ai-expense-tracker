@@ -1379,125 +1379,19 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             st.write(f"💰 **Net Amount:** ¥{net_amount:,.0f}")
             
                         # Check for potential data issues
-        st.write("**Data Quality Check:**")
-        st.write(f"**Total Transactions:** {len(df_cat)}")
-        
-        # Safe duplicate detection that handles mixed data types
-        try:
-            # Convert to string representation for safe duplicate detection
-            df_string = df_cat.astype(str)
-            unique_count = len(df_string.drop_duplicates())
-            st.write(f"**Unique Transactions:** {unique_count}")
-            
-            if len(df_cat) != unique_count:
-                st.warning(f"**Potential Duplicates:** {len(df_cat) - unique_count} transactions may be duplicates")
-        except Exception as e:
-            st.warning(f"**Duplicate Check:** Unable to determine unique count due to data type issues")
-            st.write(f"**Error:** {str(e)}")
-        
-        # Check for duplicate amounts that might be causing inflation
-        try:
-            amount_counts = df_cat['amount'].value_counts()
-            duplicate_amounts = amount_counts[amount_counts > 1]
-            if len(duplicate_amounts) > 0:
-                st.warning(f"**Duplicate Amounts Found:** {len(duplicate_amounts)} amounts appear multiple times")
-                st.write("**Top Duplicate Amounts:**")
-                for amount, count in duplicate_amounts.head(5).items():
-                    st.write(f"  ¥{amount:,.0f}: {count} times")
-        except Exception as e:
-            st.warning("**Amount Analysis:** Unable to analyze duplicate amounts due to data type issues")
-        
-        # Check for extreme amounts that might be outliers
-        extreme_amounts = df_cat[df_cat['amount'].abs() > 100000]  # Amounts over ¥100,000
-        if len(extreme_amounts) > 0:
-            st.warning(f"**Extreme Amounts Found:** {len(extreme_amounts)} transactions over ¥100,000")
-            st.write("**Extreme Amounts:**")
-            for idx, row in extreme_amounts.iterrows():
-                st.write(f"  ¥{row['amount']:,.0f}: {row['description'][:30]}...")
+        # Cleaned UI: remove verbose data quality diagnostics
         
         # Show transaction breakdown by type
-        st.write("**Transaction Type Breakdown:**")
-        type_breakdown = df_cat['transaction_type'].value_counts()
-        for trans_type, count in type_breakdown.items():
-            type_total = df_cat[df_cat['transaction_type'] == trans_type]['amount'].abs().sum()
-            st.write(f"  **{trans_type}:** {count} transactions, Total: ¥{type_total:,.0f}")
+        # Cleaned UI: remove transaction type breakdown list
         
         # Add manual correction option
-        st.write("**🔧 Manual Correction:**")
-        # Remove manual override for hard-coded expected total
-
-        # Alternative calculation methods for verification
-        st.write("**🔍 Alternative Calculations:**")
-
-        # Method 1: Sum of absolute values (most likely correct for bank statements)
-        total_abs = df_cat['amount'].abs().sum()
-        st.write(f"**Method 1 - Sum of Absolute Values:** ¥{total_abs:,.0f}")
-
-        # Method 2: Sum of positive amounts only
-        positive_amounts = df_cat[df_cat['amount'] > 0]['amount'].sum()
-        st.write(f"**Method 2 - Sum of Positive Amounts:** ¥{positive_amounts:,.0f}")
-
-        # Method 3: Sum of negative amounts (absolute)
-        negative_amounts = abs(df_cat[df_cat['amount'] < 0]['amount'].sum())
-        st.write(f"**Method 3 - Sum of Negative Amounts (abs):** ¥{negative_amounts:,.0f}")
-
-        # Method 4: Simple sum of all amounts
-        simple_sum = df_cat['amount'].sum()
-        st.write(f"**Method 4 - Simple Sum:** ¥{simple_sum:,.0f}")
-
-        # Method 5: Force correct total for verification
-        st.write("**🔧 Manual Override (for testing):**")
-        # Removed manual override controls
-
-        # Show transaction type distribution for debugging
-        st.write("**Transaction Type Distribution:**")
-        st.write(f"🔴 **Expenses:** {len(expense_df)} transactions")
-        st.write(f"🟢 **Credits:** {len(credit_df)} transactions")
-
-        # Add comprehensive debugging information
-        st.write("**🔍 Debug Information:**")
-        # Removed expected vs current comparison
-
-        # Show sample of amounts to understand the data
-        if len(df_cat) > 0:
-            st.write("**Sample Amounts (first 5):**")
-            sample_amounts = df_cat['amount'].head(5)
-            for i, amount in enumerate(sample_amounts):
-                st.write(f"  {i+1}. ¥{amount:,.0f}")
-
-        # Show amount statistics
-        st.write("**Amount Statistics:**")
-        st.write(f"**Min Amount:** ¥{df_cat['amount'].min():,.0f}")
-        st.write(f"**Max Amount:** ¥{df_cat['amount'].max():,.0f}")
-        st.write(f"**Mean Amount:** ¥{df_cat['amount'].mean():,.0f}")
-        st.write(f"**Total Transactions:** {len(df_cat)}")
+        # Cleaned UI: remove manual correction/alternative calculations/debug blocks
         
         st.divider()
         
-        # Display category breakdown with subcategories
-        col1, col2 = st.columns(2)
-        with col1:
-            st.write("**Main Categories (Expenses Only):**")
-            expense_df = df_cat[df_cat['transaction_type'] == 'Expense']
-            expense_category_counts = expense_df['category'].value_counts()
-            
-            for cat, count in expense_category_counts.items():
-                if cat != "Uncategorised":
-                    st.write(f"• {cat}: {count}")
-                    
-                    # Show subcategories for this main category
-                    if cat in subcategories:
-                        sub_counts = expense_df[expense_df['category'] == cat]['subcategory'].value_counts()
-                        for sub_cat, sub_count in sub_counts.items():
-                            if sub_cat:  # Only show non-empty subcategories
-                                st.write(f"  └─ {sub_cat}: {sub_count}")
-        
-        with col2:
-            uncategorized_count = expense_category_counts.get("Uncategorised", 0)
-            st.write(f"**Uncategorized Expenses:** {uncategorized_count}")
-            
-            # Show total expenses
-            st.write(f"**Total Expenses:** {len(expense_df)}")
+        # Cleaned UI: remove category breakdown lists
+        expense_df = df_cat[df_cat['transaction_type'] == 'Expense']
+        uncategorized_count = int((df_cat['category'] == 'Uncategorised').sum())
         
         # Smart categorization for uncategorized transactions
         if uncategorized_count > 0:
@@ -1725,7 +1619,12 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             ],
             num_rows="dynamic",
             key="category_filter_editor",
-            disabled=[False, False, False, True, True, False, False, True]
+            disabled=[False, False, False, True, True, False, False, True],
+            use_container_width=True,
+            column_config={
+                'description': st.column_config.TextColumn('Description', width='large'),
+                'original_description': st.column_config.TextColumn('Original (Japanese)', width='large')
+            }
         )
 
         # Apply edits back to the master dataframe
@@ -1820,7 +1719,15 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 st.metric("📊 Average Balance", f"¥{balance_df['running_balance'].mean():,.0f}")
         
         # Use data editor for final review
-        edited_df = st.data_editor(display_df, num_rows="dynamic")
+        edited_df = st.data_editor(
+            display_df,
+            num_rows="dynamic",
+            use_container_width=True,
+            column_config={
+                'description': st.column_config.TextColumn('Description', width='large'),
+                'original_description': st.column_config.TextColumn('Original (Japanese)', width='large')
+            }
+        )
         
         if not edited_df.empty:
             edited_df["month"] = pd.to_datetime(edited_df["date"]).dt.to_period("M").astype(str)
