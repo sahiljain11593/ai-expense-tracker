@@ -32,6 +32,9 @@ from datetime import datetime
 import pandas as pd
 import streamlit as st
 
+# Wide layout for more horizontal space
+st.set_page_config(layout="wide")
+
 # Smart Learning System (now using built-in MerchantLearningSystem class)
 
 try:
