@@ -97,7 +97,9 @@ export OPENAI_API_KEY="your-api-key-here"
 2. **Review Data**: Check extracted transactions
 3. **Edit Categories**: Manually adjust if needed
 4. **View Reports**: See monthly spending summaries
-5. **Export Data**: Download processed data (coming soon)
+5. **Export Data**: Use Export/Backup buttons in the app (CSV and DB backup)
+6. **Google Drive Backup**: Use "Backup to Drive" (authorize first) for cloud backups
+7. **Recurring**: Create rules (weekly/monthly) and generate next instances
 
 ## 🛠️ Development
 
@@ -123,10 +125,37 @@ expense-tracker/
 streamlit run transaction_web_app.py
 ```
 
-### Cloud Deployment
-- **Heroku**: Easy deployment with Streamlit support
-- **Railway**: Simple container deployment
-- **AWS/GCP**: Full cloud infrastructure
+### Streamlit Cloud Deployment
+
+1. Deploy this repo on Streamlit Cloud (link your GitHub repo)
+2. Set Secrets (Settings → Secrets):
+```
+[firebase]
+apiKey = "YOUR_WEB_API_KEY"
+authDomain = "your-project.firebaseapp.com"
+projectId = "your-project"
+appId = "YOUR_APP_ID"
+
+[auth]
+allowed_email = "your@gmail.com"
+
+[google]
+client_id = "YOUR_OAUTH_CLIENT_ID"
+client_secret = "YOUR_OAUTH_CLIENT_SECRET"
+redirect_uri = "https://<your-streamlit-app-url>"
+drive_folder_id = "optional-folder-id"
+```
+3. Reboot the app. You will see a Google Sign-In button; only the allowed email can proceed.
+4. For Google Drive backup, authorize using the provided link and paste the `code` back to the app.
+
+### Local E2E Smoke Test (no auth)
+```bash
+python3 -m venv .venv --without-pip
+curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py
+. .venv/bin/activate && python get-pip.py
+pip install -r requirements.txt
+python scripts/e2e_check.py
+```
 
 ## 🤝 Contributing
 

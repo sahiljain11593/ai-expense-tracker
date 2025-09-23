@@ -27,10 +27,43 @@ import io
 import os
 import re
 from datetime import datetime
+from typing import Optional
 
 
 import pandas as pd
 import streamlit as st
+
+# Data layer
+try:
+    from data_store import (
+        init_db,
+        create_import_record,
+        insert_transactions,
+        export_transactions_to_csv,
+        backup_database,
+        load_all_transactions,
+        upsert_recurring_rule,
+        list_recurring_rules,
+        get_setting,
+        set_setting,
+    )
+except Exception as _e:
+    # Allow the app to still render other parts; show a soft warning
+    init_db = None  # type: ignore
+    create_import_record = None  # type: ignore
+    insert_transactions = None  # type: ignore
+    export_transactions_to_csv = None  # type: ignore
+    backup_database = None  # type: ignore
+    load_all_transactions = None  # type: ignore
+    upsert_recurring_rule = None  # type: ignore
+    list_recurring_rules = None  # type: ignore
+
+# Auth UI (Firebase Google Sign-In)
+try:
+    from auth_ui import require_auth
+except Exception:
+    def require_auth() -> bool:  # fallback no-auth when module unavailable
+        return True
 
 # Wide layout for more horizontal space
 st.set_page_config(layout="wide")
@@ -498,6 +531,66 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
     
     df_result = pd.DataFrame(transactions)
     return df_result
+
+
+@st.cache_data(show_spinner=False)
+def get_fx_rate_to_jpy(currency: str, for_date: Optional[str]) -> float:
+    """Fetch FX rate to JPY for a given date using exchangerate.host.
+
+    Returns 1.0 for JPY or on error. for_date format: YYYY-MM-DD.
+    """
+    try:
+        currency = (currency or "JPY").upper().strip()
+        if currency == "JPY":
+            return 1.0
+        import requests
+        # Historical if date provided, else latest
+        if for_date:
+            url = f"https://api.exchangerate.host/{for_date}"
+        else:
+            url = "https://api.exchangerate.host/latest"
+        params = {"base": currency, "symbols": "JPY"}
+        resp = requests.get(url, params=params, timeout=10)
+        data = resp.json()
+        rate = float(data.get("rates", {}).get("JPY", 1.0))
+        return rate if rate > 0 else 1.0
+    except Exception:
+        return 1.0
+
+
+def enrich_currency_columns(df: pd.DataFrame, default_currency: str = "JPY") -> pd.DataFrame:
+    df2 = df.copy()
+    # If a currency column exists, use it; otherwise apply default
+    currency_col = None
+    for c in df2.columns:
+        if str(c).lower().strip() in ["currency", "curr", "ccy"]:
+            currency_col = c
+            break
+    if currency_col is None:
+        df2["currency"] = default_currency
+    else:
+        df2.rename(columns={currency_col: "currency"}, inplace=True)
+
+    # Compute fx_rate and amount_jpy per row
+    fx_rates = []
+    amts_jpy = []
+    for _, r in df2.iterrows():
+        date_val = r.get("date")
+        if hasattr(date_val, "strftime"):
+            date_str = date_val.strftime("%Y-%m-%d")
+        else:
+            date_str = str(date_val)
+        ccy = str(r.get("currency", default_currency) or default_currency).upper()
+        rate = get_fx_rate_to_jpy(ccy, date_str)
+        fx_rates.append(rate)
+        try:
+            amt = float(r.get("amount", 0.0))
+        except Exception:
+            amt = 0.0
+        amts_jpy.append(amt * rate)
+    df2["fx_rate"] = fx_rates
+    df2["amount_jpy"] = amts_jpy
+    return df2
 
 def validate_transaction_data(df: pd.DataFrame) -> dict:
     """Comprehensive data validation for transaction data."""
@@ -1005,11 +1098,28 @@ def load_custom_rules(filename: str = "custom_rules.json"):
 
 
 def main() -> None:
+    # Require authentication (single-user gate if configured)
+    if not require_auth():
+        return
+
     st.title("Transaction Categoriser")
     st.write(
         "Upload a credit card statement in PDF, CSV, or image format. The app will extract transaction data, "
         "assign categories based on keyword rules and let you review the results."
     )
+
+    # Onboarding note
+    st.info(
+        "Getting started: 1) Upload CSV/PDF, 2) Review categories, 3) Save to DB, 4) Export/Backup as needed."
+    )
+
+    # Initialize database (first run safe)
+    if init_db:
+        try:
+            init_db()
+            st.sidebar.success("🗄️ Local database ready")
+        except Exception as e:
+            st.sidebar.warning(f"DB init failed: {e}")
     
     # Initialize session state for progress tracking
     if 'categorization_progress' not in st.session_state:
@@ -1207,6 +1317,17 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 "Furniture": ["家具", "furniture", "ニトリ", "nitori", "イケア", "ikea"]
             }
         }
+        # Currency settings and FX normalization
+        st.subheader("💱 Currency & FX")
+        default_currency = st.selectbox(
+            "Statement currency (applied when missing)",
+            options=["JPY", "USD", "EUR", "AUD", "CAD", "GBP", "CNY", "KRW"],
+            index=0,
+            help="Used to convert amounts to JPY for totals."
+        )
+
+        df = enrich_currency_columns(df, default_currency)
+
         # Detect transaction types (credit vs debit)
         df = detect_transaction_type(df)
         
@@ -1712,6 +1833,254 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         
         st.divider()
         
+        # Save to database section
+        st.subheader("💾 Save to Database")
+        can_save = all(
+            col in df_cat.columns
+            for col in ["date", "description", "original_description", "amount", "currency", "fx_rate", "amount_jpy", "category", "subcategory", "transaction_type"]
+        ) and insert_transactions is not None
+
+        col_save1, col_save2 = st.columns([1, 1])
+        with col_save1:
+            if st.button("💾 Save processed transactions to DB") and can_save:
+                try:
+                    batch_id = create_import_record(uploaded_file.name if hasattr(uploaded_file, "name") else "upload", len(df_cat)) if create_import_record else None
+                    # Potential duplicate review
+                    review_rows = []
+                    for _, r in df_cat.iterrows():
+                        review_rows.append({
+                            "date": r.get("date"),
+                            "description": r.get("description"),
+                            "original_description": r.get("original_description"),
+                            "amount": float(r.get("amount", 0.0)),
+                            "currency": r.get("currency", default_currency),
+                            "fx_rate": float(r.get("fx_rate", 1.0)),
+                            "amount_jpy": float(r.get("amount_jpy", r.get("amount", 0.0))),
+                            "category": r.get("category"),
+                            "subcategory": r.get("subcategory"),
+                            "transaction_type": r.get("transaction_type"),
+                        })
+                    # Lightweight potential duplicate detection: same date & amount
+                    pot_dupes = []
+                    try:
+                        existing = pd.DataFrame(load_all_transactions() or []) if load_all_transactions else pd.DataFrame()
+                        if not existing.empty:
+                            existing['date'] = pd.to_datetime(existing['date']).dt.strftime('%Y-%m-%d')
+                            for row in review_rows:
+                                date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
+                                match = existing[(existing['date'] == date_str) & (existing['amount'].round(2) == round(row['amount'], 2))]
+                                if len(match) > 0:
+                                    pot_dupes.append({
+                                        "date": date_str,
+                                        "amount": row['amount'],
+                                        "new_description": row['description'],
+                                        "existing_count": int(len(match))
+                                    })
+                    except Exception:
+                        pass
+
+                    if pot_dupes:
+                        st.warning("Potential duplicates detected. Review below; choose whether to insert them.")
+                        st.dataframe(pd.DataFrame(pot_dupes))
+                        insert_suspected = st.checkbox("Insert suspected duplicates too", value=False)
+                    else:
+                        insert_suspected = True
+
+                    if not insert_suspected and 'existing' in locals() and not existing.empty:
+                        filtered_rows = []
+                        for row in review_rows:
+                            date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
+                            match = existing[(existing['date'] == date_str) & (existing['amount'].round(2) == round(row['amount'], 2))]
+                            if len(match) == 0:
+                                filtered_rows.append(row)
+                        review_rows = filtered_rows
+
+                    inserted, dupes, _ = insert_transactions(review_rows, batch_id)  # type: ignore
+                    st.success(f"Inserted {inserted} rows. Skipped {dupes} strict duplicates.")
+                except Exception as e:
+                    st.error(f"Save failed: {e}")
+            elif not can_save:
+                st.caption("Cannot save yet: data layer not ready or required columns missing.")
+
+        with col_save2:
+            sanitize = st.checkbox("Sanitize exports (remove Original/Japanese text)", value=False)
+            if st.button("🧾 Export DB to CSV") and export_transactions_to_csv is not None:
+                try:
+                    if sanitize and load_all_transactions is not None:
+                        rows = load_all_transactions()
+                        df_all = pd.DataFrame(rows)
+                        if 'original_description' in df_all.columns:
+                            df_all = df_all.drop(columns=['original_description'])
+                        ts = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+                        out_path = os.path.join('exports', f'transactions_sanitized_{ts}.csv')
+                        os.makedirs('exports', exist_ok=True)
+                        df_all.to_csv(out_path, index=False)
+                        st.success(f"Exported sanitized CSV: {out_path}")
+                    else:
+                        csv_path = export_transactions_to_csv()
+                        st.success(f"Exported to {csv_path}")
+                except Exception as e:
+                    st.error(f"Export failed: {e}")
+
+        col_bkp1, col_bkp2 = st.columns([1, 1])
+        with col_bkp1:
+            if st.button("🗄️ Backup DB (local)") and backup_database is not None:
+                try:
+                    backup_path = backup_database()
+                    st.success(f"Backup created: {backup_path}")
+                except Exception as e:
+                    st.error(f"Backup failed: {e}")
+
+        with col_bkp2:
+            if load_all_transactions is not None and st.button("📚 Show DB count"):
+                try:
+                    rows = load_all_transactions()
+                    st.info(f"DB has {len(rows)} transactions.")
+                except Exception as e:
+                    st.error(f"Count failed: {e}")
+
+        st.divider()
+
+        # Recurring transactions UI
+        st.subheader("🔁 Recurring Transactions")
+        st.caption("Mark a transaction as recurring and auto-generate future instances.")
+
+        if list_recurring_rules and upsert_recurring_rule:
+            with st.expander("Create / Update recurring rule"):
+                merchant_pattern = st.text_input("Merchant contains (pattern)")
+                freq = st.selectbox("Frequency", ["monthly", "weekly"], index=0)
+                next_date = st.date_input("Next date")
+                fixed_amount = st.number_input("Amount (optional)", value=0.0, help="Leave 0 for variable amount detected from transactions")
+                cat = st.text_input("Category (optional)")
+                subcat = st.text_input("Subcategory (optional)")
+                ccy = st.selectbox("Currency", ["JPY", "USD", "EUR", "AUD", "CAD", "GBP", "CNY", "KRW"], index=0)
+                if st.button("💾 Save recurring rule"):
+                    try:
+                        rule_id = upsert_recurring_rule({
+                            "merchant_pattern": merchant_pattern.strip(),
+                            "frequency": freq,
+                            "next_date": next_date.strftime("%Y-%m-%d"),
+                            "amount": (None if abs(fixed_amount) < 1e-9 else float(fixed_amount)),
+                            "category": (cat.strip() or None),
+                            "subcategory": (subcat.strip() or None),
+                            "currency": ccy,
+                            "active": 1,
+                        })
+                        st.success(f"Rule saved (id={rule_id})")
+                    except Exception as e:
+                        st.error(f"Failed to save rule: {e}")
+
+            existing = list_recurring_rules()
+            if existing:
+                st.write("Active rules:")
+                st.dataframe(pd.DataFrame(existing))
+            else:
+                st.caption("No active recurring rules yet.")
+
+            with st.expander("Preview next generated instances"):
+                import datetime as _dt
+                preview_rows = []
+                for r in existing or []:
+                    next_dt = _dt.date.fromisoformat(r["next_date"]) if r.get("next_date") else None
+                    if not next_dt:
+                        continue
+                    # Predict following date
+                    if r["frequency"] == "weekly":
+                        following = next_dt + _dt.timedelta(days=7)
+                    else:
+                        # monthly: naive add 30 days
+                        following = next_dt + _dt.timedelta(days=30)
+                    preview_rows.append({
+                        "merchant_pattern": r["merchant_pattern"],
+                        "next_date": str(next_dt),
+                        "predicted_following": str(following),
+                        "amount": r.get("amount"),
+                        "category": r.get("category"),
+                        "currency": r.get("currency"),
+                    })
+                if preview_rows:
+                    st.dataframe(pd.DataFrame(preview_rows))
+                else:
+                    st.caption("Nothing to preview yet.")
+
+            # Generate and insert next instances (preview-confirm)
+            with st.form("generate_recurring"):
+                st.write("Generate next instances for due rules (today or earlier)?")
+                gen = st.form_submit_button("➕ Generate Next Instances")
+                if gen:
+                    try:
+                        to_insert = []
+                        today = pd.Timestamp.today().date()
+                        for r in existing or []:
+                            if not r.get("next_date"):
+                                continue
+                            next_dt = pd.to_datetime(r["next_date"]).date()
+                            if next_dt > today:
+                                continue
+                            desc = f"Recurring: {r['merchant_pattern']}"
+                            amt = float(r["amount"]) if r.get("amount") is not None else 0.0
+                            ccy = r.get("currency", "JPY")
+                            rate = get_fx_rate_to_jpy(ccy, next_dt.strftime("%Y-%m-%d"))
+                            to_insert.append({
+                                "date": next_dt,
+                                "description": desc,
+                                "original_description": desc,
+                                "amount": amt,
+                                "currency": ccy,
+                                "fx_rate": rate,
+                                "amount_jpy": amt * rate,
+                                "category": r.get("category"),
+                                "subcategory": r.get("subcategory"),
+                                "transaction_type": "Expense" if amt <= 0 else "Credit",
+                            })
+                        if to_insert and insert_transactions:
+                            ins, dups, _ = insert_transactions(to_insert, None)
+                            st.success(f"Generated {ins} next instances (skipped {dups} duplicates)")
+                        elif not to_insert:
+                            st.info("No rules due today.")
+                    except Exception as e:
+                        st.error(f"Generation failed: {e}")
+
+        # Google Drive backup UI
+        st.subheader("☁️ Google Drive Backup")
+        st.caption("Authorize once, then upload latest DB backup and CSV export to Drive.")
+        try:
+            from drive_backup import ensure_oauth, upload_bytes
+            creds = ensure_oauth()
+            if creds:
+                col_g1, col_g2 = st.columns([1, 1])
+                with col_g1:
+                    if st.button("🔐 Backup DB to Drive"):
+                        try:
+                            # Create a DB backup file in memory via backup_database path
+                            bkp_path = backup_database() if backup_database else None
+                            if bkp_path:
+                                with open(bkp_path, "rb") as f:
+                                    data = f.read()
+                                folder_id = st.secrets.get("google", {}).get("drive_folder_id")
+                                link = upload_bytes(creds, folder_id, os.path.basename(bkp_path), data, mime="application/x-sqlite3")
+                                st.success(f"DB backup uploaded: {link}")
+                            else:
+                                st.warning("Local backup function not available.")
+                        except Exception as e:
+                            st.error(f"Drive DB backup failed: {e}")
+                with col_g2:
+                    if st.button("📤 Export CSV to Drive"):
+                        try:
+                            csv_path = export_transactions_to_csv() if export_transactions_to_csv else None
+                            if csv_path:
+                                with open(csv_path, "rb") as f:
+                                    data = f.read()
+                                folder_id = st.secrets.get("google", {}).get("drive_folder_id")
+                                link = upload_bytes(creds, folder_id, os.path.basename(csv_path), data, mime="text/csv")
+                                st.success(f"CSV uploaded: {link}")
+                            else:
+                                st.warning("CSV export function not available.")
+                        except Exception as e:
+                            st.error(f"Drive CSV upload failed: {e}")
+        except Exception as e:
+            st.info("Google Drive not configured. Add [google] secrets to enable.")
+
         # Prepare data for display with better formatting
         display_df = df_cat.copy()
         
