@@ -124,9 +124,15 @@ streamlit run transaction_web_app.py
 ```
 
 ### Cloud Deployment
-- **Heroku**: Easy deployment with Streamlit support
-- **Railway**: Simple container deployment
-- **AWS/GCP**: Full cloud infrastructure
+- **Streamlit Cloud**
+  1. Push this repo to GitHub
+  2. In Streamlit Cloud, create an app from the repo
+  3. Set Main file to `transaction_web_app.py`
+  4. Add `packages.txt` to install `tesseract-ocr`
+  5. Set secrets (optional): `OPENAI_API_KEY`
+  6. Deploy
+- **Heroku/Railway**: Use `Procfile` with Streamlit command
+- **AWS/GCP**: Containerize and run
 
 ## 🤝 Contributing
 

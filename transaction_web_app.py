@@ -26,11 +26,19 @@ Usage: run this app with
 import io
 import os
 import re
+import requests
 from datetime import datetime
 
 
 import pandas as pd
 import streamlit as st
+from data_store import (
+    init_db,
+    find_duplicates_against_store,
+    insert_transactions,
+    backup_database,
+    export_csv,
+)
 
 # Wide layout for more horizontal space
 st.set_page_config(layout="wide")
@@ -498,6 +506,24 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
     
     df_result = pd.DataFrame(transactions)
     return df_result
+
+def fetch_fx_rate(base: str, target: str) -> float:
+    """Fetch approximate FX rate using exchangerate.host (no API key)."""
+    base = (base or 'JPY').upper()
+    target = (target or 'JPY').upper()
+    if base == target:
+        return 1.0
+    try:
+        resp = requests.get(
+            f"https://api.exchangerate.host/latest",
+            params={"base": base, "symbols": target},
+            timeout=5,
+        )
+        data = resp.json()
+        rate = float(data.get('rates', {}).get(target, 1.0))
+        return rate or 1.0
+    except Exception:
+        return 1.0
 
 def validate_transaction_data(df: pd.DataFrame) -> dict:
     """Comprehensive data validation for transaction data."""
@@ -1016,6 +1042,8 @@ def main() -> None:
         st.session_state['categorization_progress'] = None
     if 'progress_saved' not in st.session_state:
         st.session_state['progress_saved'] = False
+    if 'db_initialized' not in st.session_state:
+        st.session_state['db_initialized'] = False
     
     # Initialize Merchant Learning System
     learning_system = MerchantLearningSystem()
@@ -1093,6 +1121,20 @@ def main() -> None:
                                 for score in merchant_scores.values() if score >= 0.8)
             st.sidebar.write(f"• High Confidence: {high_confidence}")
     
+    # App settings: database and currency
+    db_path = os.path.join(os.getcwd(), 'data', 'expenses.db')
+    if not st.session_state['db_initialized']:
+        init_db(db_path)
+        st.session_state['db_initialized'] = True
+
+    st.sidebar.header("💱 Currency Settings")
+    default_currency = 'JPY'
+    selected_currency = st.sidebar.selectbox(
+        "Default currency for this upload",
+        options=['JPY', 'USD', 'EUR', 'GBP', 'AUD', 'CAD', 'INR'],
+        index=0
+    )
+
     # File upload
     uploaded_file = st.file_uploader("Choose a statement file", 
 type=["pdf", "png", "jpg", "jpeg", "csv"])
@@ -1221,6 +1263,29 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         # Close the loading spinner and show completion status
         st.success(f"✅ Processing complete! Successfully processed {len(df)} transactions.")
         
+        # Multi-currency: attach currency and JPY normalization
+        if 'currency' not in df.columns:
+            df['currency'] = selected_currency
+        else:
+            df['currency'] = df['currency'].fillna(selected_currency).apply(lambda x: str(x).upper())
+        # Compute fx_rate to JPY and amount_jpy
+        fx_rates_cache = {}
+        jpy_rates = []
+        for _, r in df.iterrows():
+            cur = str(r.get('currency', 'JPY')).upper()
+            if cur not in fx_rates_cache:
+                fx_rates_cache[cur] = fetch_fx_rate(cur, 'JPY')
+            jpy_rates.append(fx_rates_cache[cur])
+        df['fx_rate'] = jpy_rates
+        df['amount_jpy'] = (df['amount'].astype(float)) * df['fx_rate'].astype(float)
+
+        # Cross-upload duplicate detection against local store
+        dups, uniques = find_duplicates_against_store(db_path, df)
+        if not dups.empty:
+            st.warning(f"🔁 Found {len(dups)} duplicates already in history. They will be skipped.")
+        inserted = insert_transactions(db_path, uniques)
+        st.success(f"💾 Stored {inserted} new transactions to local history.")
+
         # Professional Financial Data Validation
         st.subheader("🏦 Professional Financial Validation")
         
@@ -1777,6 +1842,24 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             st.write(summary)
             pivot = summary.pivot(index="month", columns="category", values="total_amount").fillna(0)
             st.bar_chart(pivot)
+
+        st.divider()
+        st.subheader("🗄️ Backup & Export")
+        col_b1, col_b2 = st.columns(2)
+        with col_b1:
+            if st.button("💾 Backup DB (local file)"):
+                backup_path = backup_database(db_path, os.path.join(os.getcwd(), 'backups'))
+                st.success(f"Backup created: {backup_path}")
+        with col_b2:
+            if st.button("📥 Export transactions CSV"):
+                out_path = export_csv(db_path, os.path.join(os.getcwd(), 'exports'))
+                with open(out_path, 'rb') as f:
+                    st.download_button(
+                        label="Download exported CSV",
+                        data=f.read(),
+                        file_name=os.path.basename(out_path),
+                        mime="text/csv",
+                    )
         
         # Show learning system statistics
         if learning_system:
