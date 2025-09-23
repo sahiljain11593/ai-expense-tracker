@@ -27,6 +27,7 @@ import io
 import os
 import re
 from datetime import datetime
+import unicodedata
 from typing import Optional
 
 
@@ -295,11 +296,15 @@ def extract_transactions_from_image(file_stream: io.BytesIO) -> pd.DataFrame:
 def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
     """Translate Japanese text to English using OpenAI GPT-3.5-turbo for high accuracy."""
     try:
+        # Normalize half-width to full-width etc. to improve translation quality
+        text_norm = normalize_japanese_text(text)
+        # Protect known merchant names with placeholders
+        protected_text, placeholders = protect_known_merchants(text_norm)
         import openai
         
         # Check if text contains Japanese characters
-        if not text or not any(ord(char) > 127 for char in text):
-            return text
+        if not protected_text or not any(ord(char) > 127 for char in protected_text):
+            return protected_text
         
         # If no API key provided, try to get from environment
         if not api_key:
@@ -316,7 +321,7 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
         prompt = f"""
         Translate the following Japanese text to English. This is from a credit card statement, so maintain accuracy for financial terms and merchant names.
         
-        Japanese text: {text}
+        Japanese text: {protected_text}
         
         English translation:"""
         
@@ -332,6 +337,8 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
         )
         
         translated = response.choices[0].message.content.strip()
+        # Restore protected merchant names
+        translated = restore_known_merchants(translated, placeholders)
         return translated
         
     except Exception as e:
@@ -342,11 +349,16 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
 def translate_japanese_to_english_fallback(text: str) -> str:
     """Fallback translation using deep-translator when AI translation fails."""
     try:
+        # Normalize first to convert half-width Katakana to standard form
+        text_norm = normalize_japanese_text(text)
+        # Protect known merchant names
+        protected_text, placeholders = protect_known_merchants(text_norm)
         from deep_translator import GoogleTranslator
-        if text and any(ord(char) > 127 for char in text):
-            translated = GoogleTranslator(source='ja', target='en').translate(text)
+        if protected_text and any(ord(char) > 127 for char in protected_text):
+            translated = GoogleTranslator(source='ja', target='en').translate(protected_text)
+            translated = restore_known_merchants(translated, placeholders)
             return translated
-        return text
+        return protected_text
     except Exception as e:
         st.warning(f"Fallback translation failed for '{text}': {e}")
         return text
@@ -359,6 +371,82 @@ def translate_japanese_to_english(text: str, mode: str = "Free Fallback", api_ke
         return translate_japanese_to_english_fallback(text)
     else:  # No Translation
         return text
+
+
+def normalize_japanese_text(text: str) -> str:
+    try:
+        # Convert half-width kana to regular width, normalize compatibility characters
+        s = unicodedata.normalize('NFKC', text)
+        # Replace ASCII/Unicode hyphens between Katakana with prolonged sound mark 'ー'
+        s = _replace_hyphen_between_katakana(s)
+        # Collapse extra spaces
+        s = re.sub(r"\s+", " ", s).strip()
+        return s
+    except Exception:
+        return text
+
+
+def protect_known_merchants(text: str):
+    """Replace known JP merchant names with placeholders to avoid mistranslation.
+    Returns (processed_text, placeholders_dict).
+    """
+    merchant_map = {
+        'ドンキホーテ': 'Don Quijote',
+        'ドン・キホーテ': 'Don Quijote',
+        'ローソン': 'Lawson',
+        'セブンイレブン': '7-Eleven',
+        'ファミリーマート': 'FamilyMart',
+        'イオン': 'AEON',
+        'ニトリ': 'Nitori',
+        'マクドナルド': "McDonald's",
+        'ケンタッキー': 'KFC',
+        'スターバックス': 'Starbucks',
+        'イトーヨーカドー': 'Ito-Yokado',
+        '西友': 'Seiyu',
+        'ライフ': 'LIFE',
+    }
+    placeholders = {}
+    processed = text
+    idx = 0
+    for jp, en in merchant_map.items():
+        if jp in processed:
+            token = f"[[BRAND_{idx}]]"
+            processed = processed.replace(jp, token)
+            placeholders[token] = en
+            idx += 1
+    return processed, placeholders
+
+
+def restore_known_merchants(translated: str, placeholders: dict) -> str:
+    try:
+        restored = translated
+        for token, en in placeholders.items():
+            restored = restored.replace(token, en)
+        # Guard against specific bad expansion like "Don't" from Don-*
+        if "Don't" in restored and 'Don ' in restored.replace("Don't", 'Don '):
+            restored = restored.replace("Don't", 'Don')
+        return restored
+    except Exception:
+        return translated
+
+
+def _replace_hyphen_between_katakana(s: str) -> str:
+    """Replace hyphen-like chars between Katakana letters with the prolonged sound mark 'ー'.
+    Handles '-', '‐', '‑', '–', '—', and halfwidth 'ｰ'.
+    """
+    try:
+        # Katakana block \u30A0-\u30FF
+        hyphens = "-‐‑–—ｰ"
+        pattern = re.compile(rf"([\u30A0-\u30FF])[{hyphens}]([\u30A0-\u30FF])")
+        prev = None
+        out = s
+        # Iteratively replace until stable (for multiple hyphens)
+        while prev != out:
+            prev = out
+            out = pattern.sub(r"\1ー\2", out)
+        return out
+    except Exception:
+        return s
 
 def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str = "Free Fallback", api_key: str = None) -> pd.DataFrame:
     """Extract transactions from a CSV file.
