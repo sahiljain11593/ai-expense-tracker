@@ -27,6 +27,8 @@ import io
 import os
 import re
 from datetime import datetime
+import functools
+import json
 import unicodedata
 from typing import Optional
 
@@ -69,7 +71,11 @@ except Exception:
 # Wide layout for more horizontal space
 st.set_page_config(layout="wide")
 
-# Smart Learning System (now using built-in MerchantLearningSystem class)
+# Smart Learning System (persistent, falls back to in-memory merchant learning)
+try:
+    from smart_learning_system import SmartLearningSystem  # type: ignore
+except Exception:
+    SmartLearningSystem = None  # type: ignore
 
 try:
     import pdfplumber  # type: ignore
@@ -293,13 +299,72 @@ def extract_transactions_from_image(file_stream: io.BytesIO) -> pd.DataFrame:
 
 
 
+def _get_translation_cache_path() -> str:
+    try:
+        os.makedirs('learning_models', exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join('learning_models', 'translation_cache.json')
+
+
+def _load_translation_cache() -> dict:
+    try:
+        if 'translation_cache' in st.session_state:
+            return st.session_state['translation_cache']
+        path = _get_translation_cache_path()
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                cache = json.load(f)
+        else:
+            cache = {}
+        st.session_state['translation_cache'] = cache
+        return cache
+    except Exception:
+        # Fail open with in-memory cache only
+        cache = {}
+        st.session_state['translation_cache'] = cache
+        return cache
+
+
+def _save_translation_cache() -> None:
+    try:
+        cache = st.session_state.get('translation_cache') or {}
+        path = _get_translation_cache_path()
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception:
+        # Ignore persistence errors silently
+        pass
+
+
+def _cache_get(key: str) -> str:
+    cache = _load_translation_cache()
+    return cache.get(key)  # type: ignore
+
+
+def _cache_set(key: str, value: str) -> None:
+    cache = _load_translation_cache()
+    # Simple size bound
+    if len(cache) > 5000:
+        # Drop roughly oldest 10% by arbitrary iteration order
+        try:
+            for i, k in enumerate(list(cache.keys())):
+                del cache[k]
+                if i > 500:
+                    break
+        except Exception:
+            cache.clear()
+    cache[key] = value
+    _save_translation_cache()
+
+
 def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
     """Translate Japanese text to English using OpenAI GPT-3.5-turbo for high accuracy."""
     try:
         # Normalize half-width to full-width etc. to improve translation quality
         text_norm = normalize_japanese_text(text)
-        # Protect known merchant names with placeholders
-        protected_text, placeholders = protect_known_merchants(text_norm)
+        # Protect known merchants and katakana tokens with placeholders
+        protected_text, placeholders = protect_known_merchants_and_tokens(text_norm)
         import openai
         
         # Check if text contains Japanese characters
@@ -319,7 +384,11 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
         
         # Create translation prompt
         prompt = f"""
-        Translate the following Japanese text to English. This is from a credit card statement, so maintain accuracy for financial terms and merchant names.
+        Translate the following Japanese text to English.
+        Context: credit card statement descriptions.
+        - Do NOT translate placeholder tokens like [[BRAND_*]] or [[KATA_*]].
+        - Keep merchant names as their common English brand names if widely known; otherwise keep as-is.
+        - Preserve numbers and currency.
         
         Japanese text: {protected_text}
         
@@ -337,7 +406,7 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
         )
         
         translated = response.choices[0].message.content.strip()
-        # Restore protected merchant names
+        # Restore protected merchant names and tokens
         translated = restore_known_merchants(translated, placeholders)
         return translated
         
@@ -351,8 +420,8 @@ def translate_japanese_to_english_fallback(text: str) -> str:
     try:
         # Normalize first to convert half-width Katakana to standard form
         text_norm = normalize_japanese_text(text)
-        # Protect known merchant names
-        protected_text, placeholders = protect_known_merchants(text_norm)
+        # Protect known merchants and katakana tokens
+        protected_text, placeholders = protect_known_merchants_and_tokens(text_norm)
         from deep_translator import GoogleTranslator
         if protected_text and any(ord(char) > 127 for char in protected_text):
             translated = GoogleTranslator(source='ja', target='en').translate(protected_text)
@@ -365,12 +434,24 @@ def translate_japanese_to_english_fallback(text: str) -> str:
 
 def translate_japanese_to_english(text: str, mode: str = "Free Fallback", api_key: str = None) -> str:
     """Main translation function - handles different translation modes."""
-    if mode == "AI-Powered (GPT-3.5)":
-        return translate_japanese_to_english_ai(text, api_key)
-    elif mode == "Free Fallback":
-        return translate_japanese_to_english_fallback(text)
-    else:  # No Translation
+    # Guard trivial cases and use cache
+    if not text:
         return text
+    key = normalize_japanese_text(text)
+    cached = _cache_get(key)
+    if cached:
+        return cached
+    if mode == "AI-Powered (GPT-3.5)":
+        result = translate_japanese_to_english_ai(text, api_key)
+    elif mode == "Free Fallback":
+        result = translate_japanese_to_english_fallback(text)
+    else:  # No Translation
+        result = text
+    try:
+        _cache_set(key, result)
+    except Exception:
+        pass
+    return result
 
 
 def normalize_japanese_text(text: str) -> str:
@@ -384,6 +465,14 @@ def normalize_japanese_text(text: str) -> str:
         return s
     except Exception:
         return text
+
+
+def load_merchant_aliases(filename: str = "merchant_aliases.json") -> dict:
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 def protect_known_merchants(text: str):
@@ -404,7 +493,33 @@ def protect_known_merchants(text: str):
         'イトーヨーカドー': 'Ito-Yokado',
         '西友': 'Seiyu',
         'ライフ': 'LIFE',
+        'ヤマダ電機': 'Yamada Denki',
+        'ヨドバシカメラ': 'Yodobashi Camera',
+        'ビックカメラ': 'Bic Camera',
+        '無印良品': 'MUJI',
+        'ユニクロ': 'UNIQLO',
+        'ジーユー': 'GU',
+        'コストコ': 'Costco',
+        'ツルハドラッグ': 'Tsuruha Drug',
+        'マツモトキヨシ': 'Matsumoto Kiyoshi',
+        'ウエルシア': 'Welcia',
+        'ココカラファイン': 'Cocokara Fine',
+        'すき家': 'Sukiya',
+        '吉野家': 'Yoshinoya',
+        '松屋': 'Matsuya',
+        'サイゼリヤ': 'Saizeriya',
+        'デニーズ': "Denny's",
+        'ココイチ': 'Coco Ichibanya',
+        'ケーズデンキ': "K's Denki",
+        'ニコニコレンタカー': 'NICONICO Rentacar',
+        'ブックオフ': 'BOOKOFF',
+        'ツタヤ': 'TSUTAYA',
+        'ドトール': 'Doutor',
+        'ミスタードーナツ': 'Mister Donut',
+        'モスバーガー': 'MOS Burger',
     }
+    # Merge in user-provided aliases
+    merchant_map.update(load_merchant_aliases())
     placeholders = {}
     processed = text
     idx = 0
@@ -414,6 +529,32 @@ def protect_known_merchants(text: str):
             processed = processed.replace(jp, token)
             placeholders[token] = en
             idx += 1
+    return processed, placeholders
+
+
+def _protect_katakana_sequences(text: str, placeholders: dict, start_idx: int) -> tuple:
+    """Protect 3+ length Katakana sequences to avoid mistranslation.
+    Returns (processed_text, placeholders, next_index).
+    """
+    try:
+        pattern = re.compile(r"[\u30A0-\u30FF]{3,}")
+        processed = text
+        idx = start_idx
+        for m in pattern.finditer(text):
+            token = f"[[KATA_{idx}]]"
+            original = m.group(0)
+            processed = processed.replace(original, token)
+            placeholders[token] = original
+            idx += 1
+        return processed, placeholders, idx
+    except Exception:
+        return text, placeholders, start_idx
+
+
+def protect_known_merchants_and_tokens(text: str) -> tuple:
+    """Protect known merchants and generic Katakana brand-like tokens."""
+    processed, placeholders = protect_known_merchants(text)
+    processed, placeholders, _ = _protect_katakana_sequences(processed, placeholders, len(placeholders))
     return processed, placeholders
 
 
@@ -1214,10 +1355,37 @@ def main() -> None:
         st.session_state['categorization_progress'] = None
     if 'progress_saved' not in st.session_state:
         st.session_state['progress_saved'] = False
-    
-    # Initialize Merchant Learning System
-    learning_system = MerchantLearningSystem()
-    st.sidebar.success("🧠 Merchant Learning System Active")
+
+    # Initialize persistent learning system once per session
+    if 'learning_system' not in st.session_state:
+        if SmartLearningSystem is not None:
+            try:
+                st.session_state['learning_system'] = SmartLearningSystem()
+                # Optional bootstrap training from DB if available
+                if load_all_transactions is not None:
+                    rows = load_all_transactions()
+                    if rows:
+                        df_db = pd.DataFrame(rows)
+                        if 'category' in df_db.columns and df_db['category'].notna().any():
+                            training_df = pd.DataFrame({
+                                'description': df_db.get('description', pd.Series(dtype=str)).fillna(''),
+                                'original_description': df_db.get('original_description', pd.Series(dtype=str)).fillna(''),
+                                'category': df_db.get('category', pd.Series(dtype=str)).fillna('Uncategorised')
+                            })
+                            # Train only if we have at least a few labeled rows
+                            if training_df['category'].ne('').sum() >= 5:
+                                st.session_state['learning_system'].train_models(training_df)
+                st.sidebar.success("🧠 Smart Learning System Active (persistent)")
+            except Exception as e:
+                # Fallback to in-memory learning if persistent system fails
+                st.session_state['learning_system'] = MerchantLearningSystem()
+                st.sidebar.warning(f"🧠 Merchant Learning Fallback Active (in-memory). Reason: {e}")
+        else:
+            # No persistent system available
+            st.session_state['learning_system'] = MerchantLearningSystem()
+            st.sidebar.warning("🧠 Merchant Learning Fallback Active (in-memory)")
+
+    learning_system = st.session_state['learning_system']
     
     # AI Translation Setup
     st.sidebar.header("🤖 AI Translation Settings")
@@ -1265,6 +1433,36 @@ def main() -> None:
     else:
         translation_mode = "Free Fallback"
         st.sidebar.success("ℹ️ Using free translation (enter API key for AI accuracy)")
+
+    # Translation tools
+    with st.sidebar.expander("🧰 Translation tools"):
+        if st.button("Clear translation cache", key="btn_clear_translation_cache"):
+            try:
+                # Clear in-memory cache
+                st.session_state['translation_cache'] = {}
+                # Remove on-disk cache
+                try:
+                    cache_path = _get_translation_cache_path()
+                    if os.path.exists(cache_path):
+                        os.remove(cache_path)
+                except Exception:
+                    pass
+                st.success("Translation cache cleared")
+            except Exception as e:
+                st.error(f"Failed to clear cache: {e}")
+
+        if st.button("Reload merchant aliases", key="btn_reload_aliases"):
+            try:
+                aliases = load_merchant_aliases()
+                st.success(f"Loaded {len(aliases)} custom aliases from merchant_aliases.json")
+                if aliases:
+                    # Show a small preview
+                    preview_items = list(aliases.items())[:5]
+                    st.caption("Preview:")
+                    for jp, en in preview_items:
+                        st.text(f"{jp} -> {en}")
+            except Exception as e:
+                st.error(f"Failed to load aliases: {e}")
     
     # Smart Learning Dashboard
     if learning_system:
@@ -1291,6 +1489,64 @@ def main() -> None:
                                 for score in merchant_scores.values() if score >= 0.8)
             st.sidebar.write(f"• High Confidence: {high_confidence}")
     
+    # Previously saved transactions viewer
+    st.subheader("📚 Previously Saved Transactions")
+    try:
+        if load_all_transactions is not None:
+            rows = load_all_transactions()
+            df_prev = pd.DataFrame(rows)
+            if not df_prev.empty:
+                # Basic filters
+                colf1, colf2, colf3 = st.columns([1, 1, 2])
+                with colf1:
+                    date_min = st.date_input("From", value=pd.to_datetime(df_prev['date']).min().date())
+                with colf2:
+                    date_max = st.date_input("To", value=pd.to_datetime(df_prev['date']).max().date())
+                with colf3:
+                    text_q = st.text_input("Search description", "")
+                colf4, colf5 = st.columns([1,1])
+                with colf4:
+                    cat_filter = st.multiselect("Category", sorted([c for c in df_prev['category'].dropna().unique().tolist()]))
+                with colf5:
+                    type_filter = st.multiselect("Type", sorted([t for t in df_prev['transaction_type'].dropna().unique().tolist()]))
+
+                dfv = df_prev.copy()
+                # Date filter
+                try:
+                    dfv['date_dt'] = pd.to_datetime(dfv['date']).dt.date
+                    dfv = dfv[(dfv['date_dt'] >= date_min) & (dfv['date_dt'] <= date_max)]
+                except Exception:
+                    pass
+                # Text filter
+                if text_q:
+                    q = text_q.lower().strip()
+                    dfv = dfv[dfv['description'].astype(str).str.lower().str.contains(q) | dfv.get('original_description', pd.Series(dtype=str)).astype(str).str.lower().str.contains(q)]
+                # Category filter
+                if cat_filter:
+                    dfv = dfv[dfv['category'].isin(cat_filter)]
+                # Type filter
+                if type_filter:
+                    dfv = dfv[dfv['transaction_type'].isin(type_filter)]
+
+                # Show summary and table
+                st.caption(f"Showing {len(dfv)} of {len(df_prev)} saved transactions")
+                st.dataframe(
+                    dfv.drop(columns=[c for c in ['date_dt'] if c in dfv.columns]).rename(columns={'original_description': 'Original (Japanese)'}),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                # Download filtered
+                csv_prev = dfv.to_csv(index=False)
+                st.download_button("📥 Download filtered CSV", data=csv_prev, file_name="saved_transactions_filtered.csv", mime="text/csv")
+            else:
+                st.caption("No saved transactions yet.")
+        else:
+            st.caption("Data layer not available; cannot load previous transactions.")
+    except Exception as e:
+        st.warning(f"Unable to load saved transactions: {e}")
+
+    st.divider()
+
     # File upload
     uploaded_file = st.file_uploader("Choose a statement file", 
 type=["pdf", "png", "jpg", "jpeg", "csv"])
@@ -1306,8 +1562,8 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             st.error(f"Error processing file: {e}")
             return
         
-        # Initialize learning system
-        learning_system = MerchantLearningSystem()
+        # Reuse the existing learning system (do not reinitialize)
+        learning_system = st.session_state['learning_system']
         
         # Show loading animation during processing
         with st.spinner("🔄 Processing transactions and applying smart categorization..."):
@@ -1783,6 +2039,20 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                                 learning_system.learn_from_user_feedback(
                                     str(idx), original_category, new_category, transaction_data
                                 )
+
+                        # Retrain persistent models with current labeled data, if supported
+                        try:
+                            if hasattr(learning_system, 'train_models'):
+                                train_df = df_cat.copy()
+                                # Use only labeled rows
+                                train_df = train_df[train_df['category'].notna() & (train_df['category'] != 'Uncategorised')]
+                                if not train_df.empty and len(train_df) >= 5:
+                                    learning_system.train_models(train_df[['description', 'original_description', 'category']])
+                            # Persist merchant patterns if method exists
+                            if hasattr(learning_system, 'save_merchant_patterns'):
+                                learning_system.save_merchant_patterns()
+                        except Exception as _e:
+                            pass
                     
                     st.success("🎉 All categories updated! Scroll down to see the results.")
                     
@@ -1985,6 +2255,18 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
 
                     inserted, dupes, _ = insert_transactions(review_rows, batch_id)  # type: ignore
                     st.success(f"Inserted {inserted} rows. Skipped {dupes} strict duplicates.")
+
+                    # After saving, retrain and persist models with the finalized labels
+                    try:
+                        if learning_system and hasattr(learning_system, 'train_models'):
+                            train_df = df_cat.copy()
+                            train_df = train_df[train_df['category'].notna() & (train_df['category'] != 'Uncategorised')]
+                            if not train_df.empty and len(train_df) >= 5:
+                                learning_system.train_models(train_df[['description', 'original_description', 'category']])
+                        if learning_system and hasattr(learning_system, 'save_merchant_patterns'):
+                            learning_system.save_merchant_patterns()
+                    except Exception:
+                        pass
                 except Exception as e:
                     st.error(f"Save failed: {e}")
             elif not can_save:
