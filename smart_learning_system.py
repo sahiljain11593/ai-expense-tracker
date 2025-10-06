@@ -30,11 +30,14 @@ class SmartLearningSystem:
         
         # ML Models
         self.text_classifier = None
+        self.text_vectorizer = None
         self.amount_classifier = None
         self.ensemble_weights = {'text': 0.4, 'rules': 0.3, 'patterns': 0.3}
         
         # Load existing models if available
         self.load_models()
+        # Load any previously learned merchant patterns
+        self.load_merchant_patterns()
     
     def learn_from_user_feedback(self, transaction_id: str, original_prediction: str, 
                                 user_correction: str, transaction_data: dict) -> None:

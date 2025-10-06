@@ -69,7 +69,11 @@ except Exception:
 # Wide layout for more horizontal space
 st.set_page_config(layout="wide")
 
-# Smart Learning System (now using built-in MerchantLearningSystem class)
+# Smart Learning System (persistent, falls back to in-memory merchant learning)
+try:
+    from smart_learning_system import SmartLearningSystem  # type: ignore
+except Exception:
+    SmartLearningSystem = None  # type: ignore
 
 try:
     import pdfplumber  # type: ignore
@@ -1214,10 +1218,37 @@ def main() -> None:
         st.session_state['categorization_progress'] = None
     if 'progress_saved' not in st.session_state:
         st.session_state['progress_saved'] = False
-    
-    # Initialize Merchant Learning System
-    learning_system = MerchantLearningSystem()
-    st.sidebar.success("🧠 Merchant Learning System Active")
+
+    # Initialize persistent learning system once per session
+    if 'learning_system' not in st.session_state:
+        if SmartLearningSystem is not None:
+            try:
+                st.session_state['learning_system'] = SmartLearningSystem()
+                # Optional bootstrap training from DB if available
+                if load_all_transactions is not None:
+                    rows = load_all_transactions()
+                    if rows:
+                        df_db = pd.DataFrame(rows)
+                        if 'category' in df_db.columns and df_db['category'].notna().any():
+                            training_df = pd.DataFrame({
+                                'description': df_db.get('description', pd.Series(dtype=str)).fillna(''),
+                                'original_description': df_db.get('original_description', pd.Series(dtype=str)).fillna(''),
+                                'category': df_db.get('category', pd.Series(dtype=str)).fillna('Uncategorised')
+                            })
+                            # Train only if we have at least a few labeled rows
+                            if training_df['category'].ne('').sum() >= 5:
+                                st.session_state['learning_system'].train_models(training_df)
+                st.sidebar.success("🧠 Smart Learning System Active (persistent)")
+            except Exception as e:
+                # Fallback to in-memory learning if persistent system fails
+                st.session_state['learning_system'] = MerchantLearningSystem()
+                st.sidebar.warning(f"🧠 Merchant Learning Fallback Active (in-memory). Reason: {e}")
+        else:
+            # No persistent system available
+            st.session_state['learning_system'] = MerchantLearningSystem()
+            st.sidebar.warning("🧠 Merchant Learning Fallback Active (in-memory)")
+
+    learning_system = st.session_state['learning_system']
     
     # AI Translation Setup
     st.sidebar.header("🤖 AI Translation Settings")
@@ -1306,8 +1337,8 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             st.error(f"Error processing file: {e}")
             return
         
-        # Initialize learning system
-        learning_system = MerchantLearningSystem()
+        # Reuse the existing learning system (do not reinitialize)
+        learning_system = st.session_state['learning_system']
         
         # Show loading animation during processing
         with st.spinner("🔄 Processing transactions and applying smart categorization..."):
@@ -1783,6 +1814,20 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                                 learning_system.learn_from_user_feedback(
                                     str(idx), original_category, new_category, transaction_data
                                 )
+
+                        # Retrain persistent models with current labeled data, if supported
+                        try:
+                            if hasattr(learning_system, 'train_models'):
+                                train_df = df_cat.copy()
+                                # Use only labeled rows
+                                train_df = train_df[train_df['category'].notna() & (train_df['category'] != 'Uncategorised')]
+                                if not train_df.empty and len(train_df) >= 5:
+                                    learning_system.train_models(train_df[['description', 'original_description', 'category']])
+                            # Persist merchant patterns if method exists
+                            if hasattr(learning_system, 'save_merchant_patterns'):
+                                learning_system.save_merchant_patterns()
+                        except Exception as _e:
+                            pass
                     
                     st.success("🎉 All categories updated! Scroll down to see the results.")
                     
@@ -1985,6 +2030,18 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
 
                     inserted, dupes, _ = insert_transactions(review_rows, batch_id)  # type: ignore
                     st.success(f"Inserted {inserted} rows. Skipped {dupes} strict duplicates.")
+
+                    # After saving, retrain and persist models with the finalized labels
+                    try:
+                        if learning_system and hasattr(learning_system, 'train_models'):
+                            train_df = df_cat.copy()
+                            train_df = train_df[train_df['category'].notna() & (train_df['category'] != 'Uncategorised')]
+                            if not train_df.empty and len(train_df) >= 5:
+                                learning_system.train_models(train_df[['description', 'original_description', 'category']])
+                        if learning_system and hasattr(learning_system, 'save_merchant_patterns'):
+                            learning_system.save_merchant_patterns()
+                    except Exception:
+                        pass
                 except Exception as e:
                     st.error(f"Save failed: {e}")
             elif not can_save:
