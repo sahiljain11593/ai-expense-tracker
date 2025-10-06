@@ -28,6 +28,7 @@ import os
 import re
 from datetime import datetime
 import functools
+import json
 import unicodedata
 from typing import Optional
 
@@ -1432,6 +1433,36 @@ def main() -> None:
     else:
         translation_mode = "Free Fallback"
         st.sidebar.success("ℹ️ Using free translation (enter API key for AI accuracy)")
+
+    # Translation tools
+    with st.sidebar.expander("🧰 Translation tools"):
+        if st.button("Clear translation cache", key="btn_clear_translation_cache"):
+            try:
+                # Clear in-memory cache
+                st.session_state['translation_cache'] = {}
+                # Remove on-disk cache
+                try:
+                    cache_path = _get_translation_cache_path()
+                    if os.path.exists(cache_path):
+                        os.remove(cache_path)
+                except Exception:
+                    pass
+                st.success("Translation cache cleared")
+            except Exception as e:
+                st.error(f"Failed to clear cache: {e}")
+
+        if st.button("Reload merchant aliases", key="btn_reload_aliases"):
+            try:
+                aliases = load_merchant_aliases()
+                st.success(f"Loaded {len(aliases)} custom aliases from merchant_aliases.json")
+                if aliases:
+                    # Show a small preview
+                    preview_items = list(aliases.items())[:5]
+                    st.caption("Preview:")
+                    for jp, en in preview_items:
+                        st.text(f"{jp} -> {en}")
+            except Exception as e:
+                st.error(f"Failed to load aliases: {e}")
     
     # Smart Learning Dashboard
     if learning_system:
