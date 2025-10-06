@@ -1489,6 +1489,64 @@ def main() -> None:
                                 for score in merchant_scores.values() if score >= 0.8)
             st.sidebar.write(f"• High Confidence: {high_confidence}")
     
+    # Previously saved transactions viewer
+    st.subheader("📚 Previously Saved Transactions")
+    try:
+        if load_all_transactions is not None:
+            rows = load_all_transactions()
+            df_prev = pd.DataFrame(rows)
+            if not df_prev.empty:
+                # Basic filters
+                colf1, colf2, colf3 = st.columns([1, 1, 2])
+                with colf1:
+                    date_min = st.date_input("From", value=pd.to_datetime(df_prev['date']).min().date())
+                with colf2:
+                    date_max = st.date_input("To", value=pd.to_datetime(df_prev['date']).max().date())
+                with colf3:
+                    text_q = st.text_input("Search description", "")
+                colf4, colf5 = st.columns([1,1])
+                with colf4:
+                    cat_filter = st.multiselect("Category", sorted([c for c in df_prev['category'].dropna().unique().tolist()]))
+                with colf5:
+                    type_filter = st.multiselect("Type", sorted([t for t in df_prev['transaction_type'].dropna().unique().tolist()]))
+
+                dfv = df_prev.copy()
+                # Date filter
+                try:
+                    dfv['date_dt'] = pd.to_datetime(dfv['date']).dt.date
+                    dfv = dfv[(dfv['date_dt'] >= date_min) & (dfv['date_dt'] <= date_max)]
+                except Exception:
+                    pass
+                # Text filter
+                if text_q:
+                    q = text_q.lower().strip()
+                    dfv = dfv[dfv['description'].astype(str).str.lower().str.contains(q) | dfv.get('original_description', pd.Series(dtype=str)).astype(str).str.lower().str.contains(q)]
+                # Category filter
+                if cat_filter:
+                    dfv = dfv[dfv['category'].isin(cat_filter)]
+                # Type filter
+                if type_filter:
+                    dfv = dfv[dfv['transaction_type'].isin(type_filter)]
+
+                # Show summary and table
+                st.caption(f"Showing {len(dfv)} of {len(df_prev)} saved transactions")
+                st.dataframe(
+                    dfv.drop(columns=[c for c in ['date_dt'] if c in dfv.columns]).rename(columns={'original_description': 'Original (Japanese)'}),
+                    use_container_width=True,
+                    hide_index=True,
+                )
+                # Download filtered
+                csv_prev = dfv.to_csv(index=False)
+                st.download_button("📥 Download filtered CSV", data=csv_prev, file_name="saved_transactions_filtered.csv", mime="text/csv")
+            else:
+                st.caption("No saved transactions yet.")
+        else:
+            st.caption("Data layer not available; cannot load previous transactions.")
+    except Exception as e:
+        st.warning(f"Unable to load saved transactions: {e}")
+
+    st.divider()
+
     # File upload
     uploaded_file = st.file_uploader("Choose a statement file", 
 type=["pdf", "png", "jpg", "jpeg", "csv"])
