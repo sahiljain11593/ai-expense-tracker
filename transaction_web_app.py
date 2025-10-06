@@ -27,6 +27,7 @@ import io
 import os
 import re
 from datetime import datetime
+import functools
 import unicodedata
 from typing import Optional
 
@@ -297,13 +298,72 @@ def extract_transactions_from_image(file_stream: io.BytesIO) -> pd.DataFrame:
 
 
 
+def _get_translation_cache_path() -> str:
+    try:
+        os.makedirs('learning_models', exist_ok=True)
+    except Exception:
+        pass
+    return os.path.join('learning_models', 'translation_cache.json')
+
+
+def _load_translation_cache() -> dict:
+    try:
+        if 'translation_cache' in st.session_state:
+            return st.session_state['translation_cache']
+        path = _get_translation_cache_path()
+        if os.path.exists(path):
+            with open(path, 'r', encoding='utf-8') as f:
+                cache = json.load(f)
+        else:
+            cache = {}
+        st.session_state['translation_cache'] = cache
+        return cache
+    except Exception:
+        # Fail open with in-memory cache only
+        cache = {}
+        st.session_state['translation_cache'] = cache
+        return cache
+
+
+def _save_translation_cache() -> None:
+    try:
+        cache = st.session_state.get('translation_cache') or {}
+        path = _get_translation_cache_path()
+        with open(path, 'w', encoding='utf-8') as f:
+            json.dump(cache, f, ensure_ascii=False, indent=2)
+    except Exception:
+        # Ignore persistence errors silently
+        pass
+
+
+def _cache_get(key: str) -> str:
+    cache = _load_translation_cache()
+    return cache.get(key)  # type: ignore
+
+
+def _cache_set(key: str, value: str) -> None:
+    cache = _load_translation_cache()
+    # Simple size bound
+    if len(cache) > 5000:
+        # Drop roughly oldest 10% by arbitrary iteration order
+        try:
+            for i, k in enumerate(list(cache.keys())):
+                del cache[k]
+                if i > 500:
+                    break
+        except Exception:
+            cache.clear()
+    cache[key] = value
+    _save_translation_cache()
+
+
 def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
     """Translate Japanese text to English using OpenAI GPT-3.5-turbo for high accuracy."""
     try:
         # Normalize half-width to full-width etc. to improve translation quality
         text_norm = normalize_japanese_text(text)
-        # Protect known merchant names with placeholders
-        protected_text, placeholders = protect_known_merchants(text_norm)
+        # Protect known merchants and katakana tokens with placeholders
+        protected_text, placeholders = protect_known_merchants_and_tokens(text_norm)
         import openai
         
         # Check if text contains Japanese characters
@@ -323,7 +383,11 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
         
         # Create translation prompt
         prompt = f"""
-        Translate the following Japanese text to English. This is from a credit card statement, so maintain accuracy for financial terms and merchant names.
+        Translate the following Japanese text to English.
+        Context: credit card statement descriptions.
+        - Do NOT translate placeholder tokens like [[BRAND_*]] or [[KATA_*]].
+        - Keep merchant names as their common English brand names if widely known; otherwise keep as-is.
+        - Preserve numbers and currency.
         
         Japanese text: {protected_text}
         
@@ -341,7 +405,7 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
         )
         
         translated = response.choices[0].message.content.strip()
-        # Restore protected merchant names
+        # Restore protected merchant names and tokens
         translated = restore_known_merchants(translated, placeholders)
         return translated
         
@@ -355,8 +419,8 @@ def translate_japanese_to_english_fallback(text: str) -> str:
     try:
         # Normalize first to convert half-width Katakana to standard form
         text_norm = normalize_japanese_text(text)
-        # Protect known merchant names
-        protected_text, placeholders = protect_known_merchants(text_norm)
+        # Protect known merchants and katakana tokens
+        protected_text, placeholders = protect_known_merchants_and_tokens(text_norm)
         from deep_translator import GoogleTranslator
         if protected_text and any(ord(char) > 127 for char in protected_text):
             translated = GoogleTranslator(source='ja', target='en').translate(protected_text)
@@ -369,12 +433,24 @@ def translate_japanese_to_english_fallback(text: str) -> str:
 
 def translate_japanese_to_english(text: str, mode: str = "Free Fallback", api_key: str = None) -> str:
     """Main translation function - handles different translation modes."""
-    if mode == "AI-Powered (GPT-3.5)":
-        return translate_japanese_to_english_ai(text, api_key)
-    elif mode == "Free Fallback":
-        return translate_japanese_to_english_fallback(text)
-    else:  # No Translation
+    # Guard trivial cases and use cache
+    if not text:
         return text
+    key = normalize_japanese_text(text)
+    cached = _cache_get(key)
+    if cached:
+        return cached
+    if mode == "AI-Powered (GPT-3.5)":
+        result = translate_japanese_to_english_ai(text, api_key)
+    elif mode == "Free Fallback":
+        result = translate_japanese_to_english_fallback(text)
+    else:  # No Translation
+        result = text
+    try:
+        _cache_set(key, result)
+    except Exception:
+        pass
+    return result
 
 
 def normalize_japanese_text(text: str) -> str:
@@ -388,6 +464,14 @@ def normalize_japanese_text(text: str) -> str:
         return s
     except Exception:
         return text
+
+
+def load_merchant_aliases(filename: str = "merchant_aliases.json") -> dict:
+    try:
+        with open(filename, 'r', encoding='utf-8') as f:
+            return json.load(f)
+    except Exception:
+        return {}
 
 
 def protect_known_merchants(text: str):
@@ -408,7 +492,33 @@ def protect_known_merchants(text: str):
         'イトーヨーカドー': 'Ito-Yokado',
         '西友': 'Seiyu',
         'ライフ': 'LIFE',
+        'ヤマダ電機': 'Yamada Denki',
+        'ヨドバシカメラ': 'Yodobashi Camera',
+        'ビックカメラ': 'Bic Camera',
+        '無印良品': 'MUJI',
+        'ユニクロ': 'UNIQLO',
+        'ジーユー': 'GU',
+        'コストコ': 'Costco',
+        'ツルハドラッグ': 'Tsuruha Drug',
+        'マツモトキヨシ': 'Matsumoto Kiyoshi',
+        'ウエルシア': 'Welcia',
+        'ココカラファイン': 'Cocokara Fine',
+        'すき家': 'Sukiya',
+        '吉野家': 'Yoshinoya',
+        '松屋': 'Matsuya',
+        'サイゼリヤ': 'Saizeriya',
+        'デニーズ': "Denny's",
+        'ココイチ': 'Coco Ichibanya',
+        'ケーズデンキ': "K's Denki",
+        'ニコニコレンタカー': 'NICONICO Rentacar',
+        'ブックオフ': 'BOOKOFF',
+        'ツタヤ': 'TSUTAYA',
+        'ドトール': 'Doutor',
+        'ミスタードーナツ': 'Mister Donut',
+        'モスバーガー': 'MOS Burger',
     }
+    # Merge in user-provided aliases
+    merchant_map.update(load_merchant_aliases())
     placeholders = {}
     processed = text
     idx = 0
@@ -418,6 +528,32 @@ def protect_known_merchants(text: str):
             processed = processed.replace(jp, token)
             placeholders[token] = en
             idx += 1
+    return processed, placeholders
+
+
+def _protect_katakana_sequences(text: str, placeholders: dict, start_idx: int) -> tuple:
+    """Protect 3+ length Katakana sequences to avoid mistranslation.
+    Returns (processed_text, placeholders, next_index).
+    """
+    try:
+        pattern = re.compile(r"[\u30A0-\u30FF]{3,}")
+        processed = text
+        idx = start_idx
+        for m in pattern.finditer(text):
+            token = f"[[KATA_{idx}]]"
+            original = m.group(0)
+            processed = processed.replace(original, token)
+            placeholders[token] = original
+            idx += 1
+        return processed, placeholders, idx
+    except Exception:
+        return text, placeholders, start_idx
+
+
+def protect_known_merchants_and_tokens(text: str) -> tuple:
+    """Protect known merchants and generic Katakana brand-like tokens."""
+    processed, placeholders = protect_known_merchants(text)
+    processed, placeholders, _ = _protect_katakana_sequences(processed, placeholders, len(placeholders))
     return processed, placeholders
 
 
