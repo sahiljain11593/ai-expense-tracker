@@ -730,6 +730,53 @@ def get_active_categorization_session(file_name: str, db_path: str = DEFAULT_DB_
         conn.close()
 
 
+def get_all_active_categorization_sessions(db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
+    """Get all active categorization sessions."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.row_factory = sqlite3.Row
+        
+        cur.execute(
+            """
+            SELECT 
+                cs.*,
+                COUNT(cp.id) as reviewed_count,
+                COUNT(CASE WHEN cp.category IS NOT NULL THEN 1 END) as categorized_count
+            FROM categorization_sessions cs
+            LEFT JOIN categorization_progress cp ON cs.id = cp.session_id
+            WHERE cs.status = 'in_progress'
+            GROUP BY cs.id
+            ORDER BY cs.last_updated DESC
+            """,
+        )
+        
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def load_session_transactions(session_id: int, db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
+    """Load all transactions for a categorization session."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.row_factory = sqlite3.Row
+        
+        cur.execute(
+            """
+            SELECT * FROM categorization_progress 
+            WHERE session_id = ?
+            ORDER BY date DESC
+            """,
+            (session_id,)
+        )
+        
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 def complete_categorization_session(session_id: int, db_path: str = DEFAULT_DB_PATH) -> None:
     """Mark a categorization session as completed."""
     conn = get_connection(db_path)

@@ -58,6 +58,8 @@ try:
         get_categorization_session_stats,
         get_merchant_categorization_suggestions,
         apply_bulk_categorization_rules,
+        get_all_active_categorization_sessions,
+        load_session_transactions,
     )
 except Exception as _e:
     # Allow the app to still render other parts; show a soft warning
@@ -77,6 +79,8 @@ except Exception as _e:
     get_categorization_session_stats = None  # type: ignore
     get_merchant_categorization_suggestions = None  # type: ignore
     apply_bulk_categorization_rules = None  # type: ignore
+    get_all_active_categorization_sessions = None  # type: ignore
+    load_session_transactions = None  # type: ignore
 
 # Auth UI (Firebase Google Sign-In)
 try:
@@ -1228,6 +1232,67 @@ def main() -> None:
         - ☁️ Google Drive backup (optional)
         """)
 
+    # Resume Work Section
+    if get_all_active_categorization_sessions and load_session_transactions:
+        st.divider()
+        st.subheader("🔄 Resume Previous Work")
+        
+        # Get all active sessions
+        active_sessions = get_all_active_categorization_sessions()
+        
+        if active_sessions:
+            st.info(f"📋 **{len(active_sessions)} active categorization session(s) found**")
+            
+            for session in active_sessions:
+                with st.expander(f"📄 {session['file_name']} (Session {session['id']})", expanded=False):
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric("📊 Total", session['total_transactions'])
+                    with col2:
+                        st.metric("✅ Reviewed", session['reviewed_count'])
+                    with col3:
+                        st.metric("🏷️ Categorized", session['categorized_count'])
+                    with col4:
+                        completion = round((session['reviewed_count'] / session['total_transactions']) * 100, 1) if session['total_transactions'] > 0 else 0
+                        st.metric("📈 Progress", f"{completion}%")
+                    
+                    # Progress bar
+                    st.progress(completion / 100)
+                    
+                    # Session details
+                    st.caption(f"**Started:** {session['started_at'][:19]}")
+                    st.caption(f"**Last updated:** {session['last_updated'][:19]}")
+                    
+                    # Resume button
+                    if st.button(f"🔄 Resume Session {session['id']}", key=f"resume_{session['id']}"):
+                        # Load session transactions
+                        session_transactions = load_session_transactions(session['id'])
+                        
+                        if session_transactions:
+                            # Convert to DataFrame format
+                            df_resume = pd.DataFrame(session_transactions)
+                            
+                            # Set session state
+                            st.session_state['categorization_session_id'] = session['id']
+                            st.session_state['resume_mode'] = True
+                            st.session_state['resume_data'] = df_resume.to_dict('records')
+                            
+                            st.success(f"🔄 Resumed session {session['id']} with {len(session_transactions)} transactions!")
+                            st.rerun()
+                        else:
+                            st.error("❌ No transactions found for this session")
+                    
+                    # Delete session button
+                    if st.button(f"🗑️ Delete Session {session['id']}", key=f"delete_{session['id']}"):
+                        # Mark session as abandoned
+                        if complete_categorization_session:
+                            complete_categorization_session(session['id'])
+                            st.success(f"🗑️ Session {session['id']} deleted!")
+                            st.rerun()
+        else:
+            st.info("📭 No active categorization sessions found. Upload a file to start categorizing!")
+    
     # Initialize database (first run safe)
     if init_db:
         try:
@@ -1518,20 +1583,46 @@ def main() -> None:
     
     st.divider()
     
-    # File upload
-    uploaded_file = st.file_uploader("Choose a statement file", 
-type=["pdf", "png", "jpg", "jpeg", "csv"])
+    # Handle resume mode
+    if st.session_state.get('resume_mode', False) and st.session_state.get('resume_data'):
+        st.success("🔄 **Resume Mode Active** - Working with previously saved transactions")
+        st.info("💡 Your previous categorization work has been restored. Continue where you left off!")
+        
+        # Create DataFrame from resume data
+        df = pd.DataFrame(st.session_state['resume_data'])
+        
+        # Convert date column to proper format
+        if 'date' in df.columns:
+            df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
+        
+        # Set a dummy uploaded_file for compatibility
+        class DummyFile:
+            def __init__(self, name):
+                self.name = name
+        
+        uploaded_file = DummyFile(f"Resumed Session {st.session_state['categorization_session_id']}")
+        
+        # Clear resume mode after loading
+        st.session_state['resume_mode'] = False
+        
+    else:
+        # File upload
+        uploaded_file = st.file_uploader("Choose a statement file", 
+        type=["pdf", "png", "jpg", "jpeg", "csv"])
+    
     if uploaded_file is not None:
-        try:
-            if uploaded_file.type == "application/pdf":
-                df = extract_transactions_from_pdf(uploaded_file)
-            elif uploaded_file.type == "text/csv":
-                df = extract_transactions_from_csv(uploaded_file, translation_mode, api_key)
-            else:
-                df = extract_transactions_from_image(uploaded_file)
-        except Exception as e:
-            st.error(f"Error processing file: {e}")
-            return
+        # Check if we're in resume mode (df already created above)
+        if not st.session_state.get('resume_mode', False):
+            try:
+                if uploaded_file.type == "application/pdf":
+                    df = extract_transactions_from_pdf(uploaded_file)
+                elif uploaded_file.type == "text/csv":
+                    df = extract_transactions_from_csv(uploaded_file, translation_mode, api_key)
+                else:
+                    df = extract_transactions_from_image(uploaded_file)
+            except Exception as e:
+                st.error(f"Error processing file: {e}")
+                return
         
         # Initialize learning system
         learning_system = MerchantLearningSystem()
