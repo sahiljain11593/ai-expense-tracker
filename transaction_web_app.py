@@ -50,6 +50,14 @@ try:
         get_dedupe_settings,
         save_dedupe_settings,
         find_potential_duplicates_fuzzy,
+        create_categorization_session,
+        save_categorization_progress,
+        load_categorization_progress,
+        get_active_categorization_session,
+        complete_categorization_session,
+        get_categorization_session_stats,
+        get_merchant_categorization_suggestions,
+        apply_bulk_categorization_rules,
     )
 except Exception as _e:
     # Allow the app to still render other parts; show a soft warning
@@ -61,6 +69,14 @@ except Exception as _e:
     load_all_transactions = None  # type: ignore
     upsert_recurring_rule = None  # type: ignore
     list_recurring_rules = None  # type: ignore
+    create_categorization_session = None  # type: ignore
+    save_categorization_progress = None  # type: ignore
+    load_categorization_progress = None  # type: ignore
+    get_active_categorization_session = None  # type: ignore
+    complete_categorization_session = None  # type: ignore
+    get_categorization_session_stats = None  # type: ignore
+    get_merchant_categorization_suggestions = None  # type: ignore
+    apply_bulk_categorization_rules = None  # type: ignore
 
 # Auth UI (Firebase Google Sign-In)
 try:
@@ -2012,6 +2028,189 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 
                 elif skip_categorization:
                     st.info("⏭️ Skipping categorization. Scroll down to review results.")
+        
+        # Advanced Categorization Interface
+        st.divider()
+        st.subheader("🎯 Advanced Categorization Tools")
+        
+        # Initialize categorization session if needed
+        if uploaded_file and create_categorization_session:
+            file_name = uploaded_file.name if hasattr(uploaded_file, 'name') else 'uploaded_file'
+            
+            # Check for existing session
+            active_session = get_active_categorization_session(file_name) if get_active_categorization_session else None
+            
+            if not active_session:
+                # Create new session
+                session_id = create_categorization_session(file_name, len(df_cat))
+                st.success(f"🆕 Created new categorization session (ID: {session_id})")
+                st.session_state['categorization_session_id'] = session_id
+            else:
+                # Resume existing session
+                session_id = active_session['id']
+                st.info(f"🔄 Resuming categorization session (ID: {session_id})")
+                st.session_state['categorization_session_id'] = session_id
+                
+                # Load existing progress
+                if load_categorization_progress:
+                    progress_data = load_categorization_progress(session_id)
+                    if progress_data:
+                        st.success(f"📊 Loaded {len(progress_data)} previously reviewed transactions")
+                        
+                        # Apply progress to current dataframe
+                        for progress in progress_data:
+                            mask = (df_cat['description'] == progress['description']) & \
+                                   (df_cat['date'] == progress['date']) & \
+                                   (df_cat['amount'] == progress['amount'])
+                            if mask.any():
+                                df_cat.loc[mask, 'category'] = progress['category']
+                                df_cat.loc[mask, 'subcategory'] = progress['subcategory']
+                                df_cat.loc[mask, 'transaction_type'] = progress['transaction_type']
+            
+            # Show session statistics
+            if get_categorization_session_stats and 'categorization_session_id' in st.session_state:
+                session_id = st.session_state['categorization_session_id']
+                stats = get_categorization_session_stats(session_id)
+                
+                if stats:
+                    col1, col2, col3, col4 = st.columns(4)
+                    with col1:
+                        st.metric("📊 Total Transactions", stats['total_transactions'])
+                    with col2:
+                        st.metric("✅ Reviewed", stats['reviewed_transactions'])
+                    with col3:
+                        st.metric("🏷️ Categorized", stats['categorized_transactions'])
+                    with col4:
+                        progress = stats['completion_percentage']
+                        st.metric("📈 Progress", f"{progress}%")
+                        
+                        # Progress bar
+                        st.progress(progress / 100)
+            
+            # Bulk categorization tools
+            with st.expander("🔧 Bulk Categorization Tools", expanded=True):
+                st.write("**Smart categorization tools to speed up your workflow:**")
+                
+                # Get merchant suggestions
+                if get_merchant_categorization_suggestions:
+                    suggestions = get_merchant_categorization_suggestions(10)
+                    if suggestions:
+                        st.write("**📚 Common merchant patterns from your history:**")
+                        for suggestion in suggestions[:5]:
+                            st.write(f"• **{suggestion['description']}** → {suggestion['category']} ({suggestion['frequency']} times)")
+                
+                # Bulk rule creation
+                st.write("**🎯 Create bulk categorization rules:**")
+                
+                rule_col1, rule_col2, rule_col3, rule_col4 = st.columns([2, 1, 1, 1])
+                with rule_col1:
+                    bulk_pattern = st.text_input("Pattern (e.g., 'amazon', 'starbucks')", key="bulk_pattern")
+                with rule_col2:
+                    bulk_category = st.selectbox("Category", 
+                        ["Food", "Shopping & Retail", "Transportation", "Entertainment", 
+                         "Subscriptions", "Utilities", "Healthcare", "Income", "Other"], 
+                        key="bulk_category")
+                with rule_col3:
+                    bulk_subcategory = st.text_input("Subcategory", key="bulk_subcategory")
+                with rule_col4:
+                    bulk_type = st.selectbox("Type", ["Expense", "Credit"], key="bulk_type")
+                
+                if st.button("🚀 Apply Rule to Uncategorized") and bulk_pattern and bulk_category:
+                    if 'categorization_session_id' in st.session_state:
+                        session_id = st.session_state['categorization_session_id']
+                        
+                        # Apply the rule
+                        rule = {
+                            'pattern': bulk_pattern,
+                            'category': bulk_category,
+                            'subcategory': bulk_subcategory,
+                            'transaction_type': bulk_type
+                        }
+                        
+                        updated_count = apply_bulk_categorization_rules(session_id, [rule])
+                        
+                        if updated_count > 0:
+                            st.success(f"✅ Applied rule to {updated_count} transactions!")
+                            st.rerun()
+                        else:
+                            st.warning("⚠️ No uncategorized transactions matched this pattern")
+                    else:
+                        st.error("❌ No active categorization session")
+            
+            # Smart review interface
+            with st.expander("🧠 Smart Review Interface", expanded=False):
+                st.write("**Review transactions efficiently with smart suggestions:**")
+                
+                # Get uncategorized transactions
+                uncategorized_mask = df_cat['category'].isna() | (df_cat['category'] == 'Uncategorised')
+                uncategorized_df = df_cat[uncategorized_mask].copy()
+                
+                if len(uncategorized_df) > 0:
+                    st.write(f"**Found {len(uncategorized_df)} uncategorized transactions:**")
+                    
+                    # Group by similar descriptions for batch review
+                    description_groups = uncategorized_df.groupby('description').size().sort_values(ascending=False)
+                    
+                    st.write("**📊 Transactions by description (most common first):**")
+                    for desc, count in description_groups.head(10).items():
+                        st.write(f"• **{desc}** ({count} transactions)")
+                    
+                    # Quick categorization for most common merchants
+                    if len(description_groups) > 0:
+                        most_common = description_groups.index[0]
+                        st.write(f"**🎯 Quick categorize: '{most_common}'**")
+                        
+                        quick_col1, quick_col2, quick_col3 = st.columns([1, 1, 1])
+                        with quick_col1:
+                            quick_category = st.selectbox("Category", 
+                                ["Food", "Shopping & Retail", "Transportation", "Entertainment", 
+                                 "Subscriptions", "Utilities", "Healthcare", "Income", "Other"], 
+                                key="quick_category")
+                        with quick_col2:
+                            quick_subcategory = st.text_input("Subcategory", key="quick_subcategory")
+                        with quick_col3:
+                            quick_type = st.selectbox("Type", ["Expense", "Credit"], key="quick_type")
+                        
+                        if st.button(f"🏷️ Apply to all '{most_common}' transactions"):
+                            # Apply to all matching transactions in the current dataframe
+                            mask = df_cat['description'] == most_common
+                            df_cat.loc[mask, 'category'] = quick_category
+                            df_cat.loc[mask, 'subcategory'] = quick_subcategory
+                            df_cat.loc[mask, 'transaction_type'] = quick_type
+                            
+                            # Save progress to database
+                            if save_categorization_progress and 'categorization_session_id' in st.session_state:
+                                session_id = st.session_state['categorization_session_id']
+                                for idx, row in df_cat[mask].iterrows():
+                                    save_categorization_progress(session_id, row.to_dict())
+                            
+                            st.success(f"✅ Categorized {mask.sum()} transactions!")
+                            st.rerun()
+                else:
+                    st.success("🎉 All transactions are categorized!")
+            
+            # Auto-save progress button
+            if st.button("💾 Save Progress to Database") and save_categorization_progress:
+                if 'categorization_session_id' in st.session_state:
+                    session_id = st.session_state['categorization_session_id']
+                    
+                    # Save all current progress
+                    for idx, row in df_cat.iterrows():
+                        save_categorization_progress(session_id, row.to_dict())
+                    
+                    st.success("💾 Progress saved to database! You can safely refresh the page.")
+                else:
+                    st.error("❌ No active categorization session")
+            
+            # Complete session button
+            if st.button("✅ Complete Categorization Session") and complete_categorization_session:
+                if 'categorization_session_id' in st.session_state:
+                    session_id = st.session_state['categorization_session_id']
+                    complete_categorization_session(session_id)
+                    st.success("🎉 Categorization session completed!")
+                    del st.session_state['categorization_session_id']
+                else:
+                    st.error("❌ No active categorization session")
         
         # Category filter & review
         st.subheader("🔎 Category Filter & Review")

@@ -36,6 +36,31 @@ Schema (initial):
       currency TEXT DEFAULT 'JPY'
       active INTEGER NOT NULL DEFAULT 1
 
+  - categorization_sessions
+      id INTEGER PRIMARY KEY AUTOINCREMENT
+      file_name TEXT NOT NULL
+      started_at TEXT NOT NULL
+      last_updated TEXT NOT NULL
+      total_transactions INTEGER NOT NULL
+      reviewed_transactions INTEGER NOT NULL DEFAULT 0
+      status TEXT NOT NULL DEFAULT 'in_progress'  -- 'in_progress' | 'completed' | 'abandoned'
+      session_data TEXT  -- JSON data for session state
+
+  - categorization_progress
+      id INTEGER PRIMARY KEY AUTOINCREMENT
+      session_id INTEGER NOT NULL
+      transaction_hash TEXT NOT NULL  -- hash of transaction data
+      date TEXT NOT NULL
+      description TEXT NOT NULL
+      amount REAL NOT NULL
+      category TEXT
+      subcategory TEXT
+      transaction_type TEXT
+      reviewed_at TEXT
+      confidence_score REAL DEFAULT 0.0
+      FOREIGN KEY (session_id) REFERENCES categorization_sessions(id)
+      UNIQUE(session_id, transaction_hash)
+
 Notes
  - This module owns dedupe logic (exact hash on date|description|amount). Advanced
    fuzzy dedupe is added later.
@@ -44,6 +69,7 @@ Notes
 
 from __future__ import annotations
 
+import json
 import os
 import sqlite3
 from datetime import datetime
@@ -128,6 +154,43 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
               subcategory TEXT,
               currency TEXT NOT NULL DEFAULT 'JPY',
               active INTEGER NOT NULL DEFAULT 1
+            )
+            """
+        )
+
+        # categorization sessions
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS categorization_sessions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              file_name TEXT NOT NULL,
+              started_at TEXT NOT NULL,
+              last_updated TEXT NOT NULL,
+              total_transactions INTEGER NOT NULL,
+              reviewed_transactions INTEGER NOT NULL DEFAULT 0,
+              status TEXT NOT NULL DEFAULT 'in_progress',
+              session_data TEXT
+            )
+            """
+        )
+
+        # categorization progress
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS categorization_progress (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              session_id INTEGER NOT NULL,
+              transaction_hash TEXT NOT NULL,
+              date TEXT NOT NULL,
+              description TEXT NOT NULL,
+              amount REAL NOT NULL,
+              category TEXT,
+              subcategory TEXT,
+              transaction_type TEXT,
+              reviewed_at TEXT,
+              confidence_score REAL DEFAULT 0.0,
+              FOREIGN KEY (session_id) REFERENCES categorization_sessions(id),
+              UNIQUE(session_id, transaction_hash)
             )
             """
         )
@@ -532,6 +595,293 @@ def find_potential_duplicates_fuzzy(date: str, description: str, amount: float, 
         # Sort by similarity descending
         duplicates.sort(key=lambda x: x['similarity'], reverse=True)
         return duplicates
+    finally:
+        conn.close()
+
+
+# ============================================================================
+# CATEGORIZATION PROGRESS MANAGEMENT
+# ============================================================================
+
+def create_categorization_session(file_name: str, total_transactions: int, db_path: str = DEFAULT_DB_PATH) -> int:
+    """Create a new categorization session and return the session ID."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        now = datetime.now().isoformat()
+        
+        cur.execute(
+            """
+            INSERT INTO categorization_sessions 
+            (file_name, started_at, last_updated, total_transactions, status)
+            VALUES (?, ?, ?, ?, 'in_progress')
+            """,
+            (file_name, now, now, total_transactions)
+        )
+        
+        session_id = cur.lastrowid
+        conn.commit()
+        return session_id
+    finally:
+        conn.close()
+
+
+def save_categorization_progress(
+    session_id: int, 
+    transaction_data: Dict, 
+    db_path: str = DEFAULT_DB_PATH
+) -> None:
+    """Save categorization progress for a single transaction."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        
+        # Create transaction hash for uniqueness
+        transaction_hash = compute_dedupe_hash(
+            str(transaction_data['date']),
+            transaction_data['description'],
+            float(transaction_data['amount'])
+        )
+        
+        now = datetime.now().isoformat()
+        
+        # Upsert the progress record
+        cur.execute(
+            """
+            INSERT OR REPLACE INTO categorization_progress
+            (session_id, transaction_hash, date, description, amount, 
+             category, subcategory, transaction_type, reviewed_at, confidence_score)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                session_id,
+                transaction_hash,
+                transaction_data['date'],
+                transaction_data['description'],
+                transaction_data['amount'],
+                transaction_data.get('category'),
+                transaction_data.get('subcategory'),
+                transaction_data.get('transaction_type'),
+                now,
+                transaction_data.get('confidence_score', 0.0)
+            )
+        )
+        
+        # Update session's reviewed count and last_updated
+        cur.execute(
+            """
+            UPDATE categorization_sessions 
+            SET reviewed_transactions = (
+                SELECT COUNT(*) FROM categorization_progress 
+                WHERE session_id = ?
+            ),
+            last_updated = ?
+            WHERE id = ?
+            """,
+            (session_id, now, session_id)
+        )
+        
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def load_categorization_progress(session_id: int, db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
+    """Load all categorization progress for a session."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.row_factory = sqlite3.Row
+        
+        cur.execute(
+            """
+            SELECT * FROM categorization_progress 
+            WHERE session_id = ?
+            ORDER BY reviewed_at DESC
+            """,
+            (session_id,)
+        )
+        
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def get_active_categorization_session(file_name: str, db_path: str = DEFAULT_DB_PATH) -> Optional[Dict]:
+    """Get the active categorization session for a file."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.row_factory = sqlite3.Row
+        
+        cur.execute(
+            """
+            SELECT * FROM categorization_sessions 
+            WHERE file_name = ? AND status = 'in_progress'
+            ORDER BY last_updated DESC
+            LIMIT 1
+            """,
+            (file_name,)
+        )
+        
+        row = cur.fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
+
+def complete_categorization_session(session_id: int, db_path: str = DEFAULT_DB_PATH) -> None:
+    """Mark a categorization session as completed."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        now = datetime.now().isoformat()
+        
+        cur.execute(
+            """
+            UPDATE categorization_sessions 
+            SET status = 'completed', last_updated = ?
+            WHERE id = ?
+            """,
+            (now, session_id)
+        )
+        
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_categorization_session_stats(session_id: int, db_path: str = DEFAULT_DB_PATH) -> Dict:
+    """Get statistics for a categorization session."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.row_factory = sqlite3.Row
+        
+        # Get session info
+        cur.execute("SELECT * FROM categorization_sessions WHERE id = ?", (session_id,))
+        session = cur.fetchone()
+        if not session:
+            return {}
+        
+        # Get progress stats
+        cur.execute(
+            """
+            SELECT 
+                COUNT(*) as total_reviewed,
+                COUNT(CASE WHEN category IS NOT NULL THEN 1 END) as categorized,
+                COUNT(CASE WHEN category IS NULL THEN 1 END) as uncategorized,
+                AVG(confidence_score) as avg_confidence
+            FROM categorization_progress 
+            WHERE session_id = ?
+            """,
+            (session_id,)
+        )
+        
+        stats = cur.fetchone()
+        
+        return {
+            'session': dict(session),
+            'total_transactions': session['total_transactions'],
+            'reviewed_transactions': stats['total_reviewed'],
+            'categorized_transactions': stats['categorized'],
+            'uncategorized_transactions': stats['uncategorized'],
+            'completion_percentage': round((stats['total_reviewed'] / session['total_transactions']) * 100, 1) if session['total_transactions'] > 0 else 0,
+            'average_confidence': round(stats['avg_confidence'] or 0, 2)
+        }
+    finally:
+        conn.close()
+
+
+def get_merchant_categorization_suggestions(limit: int = 20, db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
+    """Get merchant categorization suggestions based on historical data."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.row_factory = sqlite3.Row
+        
+        cur.execute(
+            """
+            SELECT 
+                description,
+                category,
+                subcategory,
+                COUNT(*) as frequency,
+                AVG(amount_jpy) as avg_amount
+            FROM transactions 
+            WHERE category IS NOT NULL
+            GROUP BY description, category, subcategory
+            ORDER BY frequency DESC, avg_amount DESC
+            LIMIT ?
+            """,
+            (limit,)
+        )
+        
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
+def apply_bulk_categorization_rules(
+    session_id: int, 
+    rules: List[Dict], 
+    db_path: str = DEFAULT_DB_PATH
+) -> int:
+    """Apply bulk categorization rules to uncategorized transactions in a session.
+    
+    Args:
+        session_id: The categorization session ID
+        rules: List of rules with pattern, category, subcategory
+        db_path: Database path
+        
+    Returns:
+        Number of transactions updated
+    """
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        updated_count = 0
+        
+        for rule in rules:
+            pattern = rule.get('pattern', '').lower()
+            category = rule.get('category')
+            subcategory = rule.get('subcategory')
+            transaction_type = rule.get('transaction_type')
+            
+            if not pattern or not category:
+                continue
+            
+            # Update transactions matching the pattern
+            cur.execute(
+                """
+                UPDATE categorization_progress 
+                SET category = ?, subcategory = ?, transaction_type = ?, reviewed_at = ?
+                WHERE session_id = ? 
+                AND category IS NULL 
+                AND LOWER(description) LIKE ?
+                """,
+                (category, subcategory, transaction_type, datetime.now().isoformat(), 
+                 session_id, f'%{pattern}%')
+            )
+            
+            updated_count += cur.rowcount
+        
+        # Update session stats
+        cur.execute(
+            """
+            UPDATE categorization_sessions 
+            SET reviewed_transactions = (
+                SELECT COUNT(*) FROM categorization_progress 
+                WHERE session_id = ?
+            ),
+            last_updated = ?
+            WHERE id = ?
+            """,
+            (session_id, datetime.now().isoformat(), session_id)
+        )
+        
+        conn.commit()
+        return updated_count
     finally:
         conn.close()
 
