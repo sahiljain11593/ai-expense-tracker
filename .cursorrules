@@ -23,7 +23,7 @@ AI-powered expense tracking web app for single-user personal finance management 
 
 ### Core Components
 
-   - Streamlit web interface (2404+ lines)
+   - Streamlit web interface (2594+ lines)
    - Streamlit web interface
    - File upload (CSV/PDF/Image)
    - Japanese → English translation (OpenAI or Google fallback)
