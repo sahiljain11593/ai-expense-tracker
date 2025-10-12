@@ -60,6 +60,9 @@ try:
         apply_bulk_categorization_rules,
         get_all_active_categorization_sessions,
         load_session_transactions,
+        learn_from_categorization,
+        get_learning_suggestions,
+        get_learning_statistics,
     )
 except Exception as _e:
     # Allow the app to still render other parts; show a soft warning
@@ -81,6 +84,9 @@ except Exception as _e:
     apply_bulk_categorization_rules = None  # type: ignore
     get_all_active_categorization_sessions = None  # type: ignore
     load_session_transactions = None  # type: ignore
+    learn_from_categorization = None  # type: ignore
+    get_learning_suggestions = None  # type: ignore
+    get_learning_statistics = None  # type: ignore
 
 # Auth UI (Firebase Google Sign-In)
 try:
@@ -2190,6 +2196,19 @@ def main() -> None:
                         for suggestion in suggestions[:5]:
                             st.write(f"• **{suggestion['description']}** → {suggestion['category']} ({suggestion['frequency']} times)")
                 
+                # Learning statistics
+                if get_learning_statistics:
+                    learning_stats = get_learning_statistics()
+                    if learning_stats['total_merchant_patterns'] > 0:
+                        st.write("**🧠 Learning System Stats:**")
+                        col1, col2, col3 = st.columns(3)
+                        with col1:
+                            st.metric("📊 Learned Merchants", learning_stats['unique_merchants'])
+                        with col2:
+                            st.metric("🎯 Total Patterns", learning_stats['total_patterns'])
+                        with col3:
+                            st.metric("🔄 Recent Learning", learning_stats['recent_learning'])
+                
                 # Bulk rule creation
                 st.write("**🎯 Create bulk categorization rules:**")
                 
@@ -2251,14 +2270,39 @@ def main() -> None:
                         most_common = description_groups.index[0]
                         st.write(f"**🎯 Quick categorize: '{most_common}'**")
                         
+                        # Get smart suggestions for the most common transaction
+                        smart_suggestions = []
+                        if get_learning_suggestions:
+                            # Get a sample transaction for suggestions
+                            sample_transaction = uncategorized_df[uncategorized_df['description'] == most_common].iloc[0]
+                            smart_suggestions = get_learning_suggestions(
+                                description=most_common,
+                                amount=sample_transaction.get('amount'),
+                                date=sample_transaction.get('date')
+                            )
+                        
+                        # Show smart suggestions
+                        if smart_suggestions:
+                            st.write("**🧠 Smart suggestions based on your patterns:**")
+                            for i, suggestion in enumerate(smart_suggestions[:3]):
+                                confidence = suggestion['confidence']
+                                reason = suggestion['reason']
+                                st.write(f"• **{suggestion['category']}** (Confidence: {confidence:.1%}) - {reason}")
+                        
                         quick_col1, quick_col2, quick_col3 = st.columns([1, 1, 1])
                         with quick_col1:
+                            # Pre-populate with best suggestion if available
+                            default_category = smart_suggestions[0]['category'] if smart_suggestions else "Food"
                             quick_category = st.selectbox("Category", 
                                 ["Food", "Shopping & Retail", "Transportation", "Entertainment", 
                                  "Subscriptions", "Utilities", "Healthcare", "Income", "Other"], 
+                                index=["Food", "Shopping & Retail", "Transportation", "Entertainment", 
+                                      "Subscriptions", "Utilities", "Healthcare", "Income", "Other"].index(default_category) if default_category in ["Food", "Shopping & Retail", "Transportation", "Entertainment", "Subscriptions", "Utilities", "Healthcare", "Income", "Other"] else 0,
                                 key="quick_category")
                         with quick_col2:
-                            quick_subcategory = st.text_input("Subcategory", key="quick_subcategory")
+                            # Pre-populate with best suggestion if available
+                            default_subcategory = smart_suggestions[0]['subcategory'] if smart_suggestions and smart_suggestions[0]['subcategory'] else ""
+                            quick_subcategory = st.text_input("Subcategory", value=default_subcategory, key="quick_subcategory")
                         with quick_col3:
                             quick_type = st.selectbox("Type", ["Expense", "Credit"], key="quick_type")
                         
@@ -2285,11 +2329,27 @@ def main() -> None:
                 if 'categorization_session_id' in st.session_state:
                     session_id = st.session_state['categorization_session_id']
                     
-                    # Save all current progress
+                    # Save all current progress and learn from categorizations
+                    learned_count = 0
                     for idx, row in df_cat.iterrows():
                         save_categorization_progress(session_id, row.to_dict())
+                        
+                        # Learn from categorization decisions
+                        if learn_from_categorization and row.get('category') and row.get('category') != 'Uncategorised':
+                            learn_from_categorization(
+                                description=row.get('description', ''),
+                                category=row.get('category'),
+                                subcategory=row.get('subcategory'),
+                                amount=row.get('amount'),
+                                date=row.get('date')
+                            )
+                            learned_count += 1
                     
-                    st.success("💾 Progress saved to database! You can safely refresh the page.")
+                    success_msg = f"💾 Progress saved to database! Learned from {learned_count} categorizations."
+                    if learned_count > 0:
+                        success_msg += " 🧠 Your patterns will improve future suggestions!"
+                    
+                    st.success(success_msg)
                 else:
                     st.error("❌ No active categorization session")
             

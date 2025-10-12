@@ -61,6 +61,39 @@ Schema (initial):
       FOREIGN KEY (session_id) REFERENCES categorization_sessions(id)
       UNIQUE(session_id, transaction_hash)
 
+  - merchant_learning
+      id INTEGER PRIMARY KEY AUTOINCREMENT
+      merchant TEXT NOT NULL
+      category TEXT NOT NULL
+      subcategory TEXT
+      frequency INTEGER NOT NULL DEFAULT 1
+      confidence_score REAL DEFAULT 0.5
+      last_updated TEXT NOT NULL
+      UNIQUE(merchant, category, subcategory)
+
+  - learning_patterns
+      id INTEGER PRIMARY KEY AUTOINCREMENT
+      pattern_type TEXT NOT NULL  -- 'merchant', 'amount_range', 'date_pattern', 'time_pattern', 'merchant_context'
+      pattern_value TEXT NOT NULL
+      category TEXT NOT NULL
+      subcategory TEXT
+      frequency INTEGER NOT NULL DEFAULT 1
+      confidence_score REAL DEFAULT 0.5
+      last_updated TEXT NOT NULL
+      UNIQUE(pattern_type, pattern_value, category, subcategory)
+
+  - merchant_context_learning
+      id INTEGER PRIMARY KEY AUTOINCREMENT
+      merchant TEXT NOT NULL
+      context_key TEXT NOT NULL  -- 'amount_range', 'day_of_week', 'time_of_day', 'amount_pattern'
+      context_value TEXT NOT NULL
+      category TEXT NOT NULL
+      subcategory TEXT
+      frequency INTEGER NOT NULL DEFAULT 1
+      confidence_score REAL DEFAULT 0.5
+      last_updated TEXT NOT NULL
+      UNIQUE(merchant, context_key, context_value, category, subcategory)
+
 Notes
  - This module owns dedupe logic (exact hash on date|description|amount). Advanced
    fuzzy dedupe is added later.
@@ -191,6 +224,57 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
               confidence_score REAL DEFAULT 0.0,
               FOREIGN KEY (session_id) REFERENCES categorization_sessions(id),
               UNIQUE(session_id, transaction_hash)
+            )
+            """
+        )
+
+        # merchant learning
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS merchant_learning (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              merchant TEXT NOT NULL,
+              category TEXT NOT NULL,
+              subcategory TEXT,
+              frequency INTEGER NOT NULL DEFAULT 1,
+              confidence_score REAL DEFAULT 0.5,
+              last_updated TEXT NOT NULL,
+              UNIQUE(merchant, category, subcategory)
+            )
+            """
+        )
+
+        # learning patterns
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS learning_patterns (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              pattern_type TEXT NOT NULL,
+              pattern_value TEXT NOT NULL,
+              category TEXT NOT NULL,
+              subcategory TEXT,
+              frequency INTEGER NOT NULL DEFAULT 1,
+              confidence_score REAL DEFAULT 0.5,
+              last_updated TEXT NOT NULL,
+              UNIQUE(pattern_type, pattern_value, category, subcategory)
+            )
+            """
+        )
+
+        # merchant context learning
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS merchant_context_learning (
+              id INTEGER PRIMARY KEY AUTOINCREMENT,
+              merchant TEXT NOT NULL,
+              context_key TEXT NOT NULL,
+              context_value TEXT NOT NULL,
+              category TEXT NOT NULL,
+              subcategory TEXT,
+              frequency INTEGER NOT NULL DEFAULT 1,
+              confidence_score REAL DEFAULT 0.5,
+              last_updated TEXT NOT NULL,
+              UNIQUE(merchant, context_key, context_value, category, subcategory)
             )
             """
         )
@@ -931,6 +1015,420 @@ def apply_bulk_categorization_rules(
         return updated_count
     finally:
         conn.close()
+
+
+# ============================================================================
+# PERSISTENT LEARNING SYSTEM
+# ============================================================================
+
+def learn_from_categorization(
+    description: str,
+    category: str,
+    subcategory: str = None,
+    amount: float = None,
+    date: str = None,
+    db_path: str = DEFAULT_DB_PATH
+) -> None:
+    """Learn from a user's categorization decision and store it persistently with contextual patterns."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        now = datetime.now().isoformat()
+        
+        # Extract merchant name
+        merchant = _extract_merchant_name(description)
+        
+        # Learn basic merchant patterns
+        if merchant and category:
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO merchant_learning
+                (merchant, category, subcategory, frequency, confidence_score, last_updated)
+                VALUES (?, ?, ?, 
+                    COALESCE((SELECT frequency FROM merchant_learning WHERE merchant = ? AND category = ? AND subcategory = ?), 0) + 1,
+                    MIN(0.95, COALESCE((SELECT confidence_score FROM merchant_learning WHERE merchant = ? AND category = ? AND subcategory = ?), 0.5) + 0.05),
+                    ?)
+                """,
+                (merchant, category, subcategory, merchant, category, subcategory, merchant, category, subcategory, now)
+            )
+        
+        # Learn contextual patterns for merchants (amount-based context)
+        if merchant and amount and category:
+            amount_range = _get_amount_range(amount)
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO merchant_context_learning
+                (merchant, context_key, context_value, category, subcategory, frequency, confidence_score, last_updated)
+                VALUES ('amount_range', ?, ?, ?, ?, 
+                    COALESCE((SELECT frequency FROM merchant_context_learning WHERE merchant = ? AND context_key = 'amount_range' AND context_value = ? AND category = ? AND subcategory = ?), 0) + 1,
+                    MIN(0.95, COALESCE((SELECT confidence_score FROM merchant_context_learning WHERE merchant = ? AND context_key = 'amount_range' AND context_value = ? AND category = ? AND subcategory = ?), 0.5) + 0.05),
+                    ?)
+                """,
+                (merchant, amount_range, category, subcategory, merchant, amount_range, category, subcategory, merchant, amount_range, category, subcategory, now)
+            )
+        
+        # Learn day-of-week context for merchants
+        if merchant and date and category:
+            day_of_week = _get_day_of_week(date)
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO merchant_context_learning
+                (merchant, context_key, context_value, category, subcategory, frequency, confidence_score, last_updated)
+                VALUES ('day_of_week', ?, ?, ?, ?, 
+                    COALESCE((SELECT frequency FROM merchant_context_learning WHERE merchant = ? AND context_key = 'day_of_week' AND context_value = ? AND category = ? AND subcategory = ?), 0) + 1,
+                    MIN(0.95, COALESCE((SELECT confidence_score FROM merchant_context_learning WHERE merchant = ? AND context_key = 'day_of_week' AND context_value = ? AND category = ? AND subcategory = ?), 0.5) + 0.05),
+                    ?)
+                """,
+                (merchant, day_of_week, category, subcategory, merchant, day_of_week, category, subcategory, merchant, day_of_week, category, subcategory, now)
+            )
+        
+        # Learn amount patterns for merchants (specific amount ranges)
+        if merchant and amount and category:
+            amount_pattern = _get_amount_pattern(amount)
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO merchant_context_learning
+                (merchant, context_key, context_value, category, subcategory, frequency, confidence_score, last_updated)
+                VALUES ('amount_pattern', ?, ?, ?, ?, 
+                    COALESCE((SELECT frequency FROM merchant_context_learning WHERE merchant = ? AND context_key = 'amount_pattern' AND context_value = ? AND category = ? AND subcategory = ?), 0) + 1,
+                    MIN(0.95, COALESCE((SELECT confidence_score FROM merchant_context_learning WHERE merchant = ? AND context_key = 'amount_pattern' AND context_value = ? AND category = ? AND subcategory = ?), 0.5) + 0.05),
+                    ?)
+                """,
+                (merchant, amount_pattern, category, subcategory, merchant, amount_pattern, category, subcategory, merchant, amount_pattern, category, subcategory, now)
+            )
+        
+        # Learn general amount range patterns
+        if amount and category:
+            amount_range = _get_amount_range(amount)
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO learning_patterns
+                (pattern_type, pattern_value, category, subcategory, frequency, confidence_score, last_updated)
+                VALUES ('amount_range', ?, ?, ?, 
+                    COALESCE((SELECT frequency FROM learning_patterns WHERE pattern_type = 'amount_range' AND pattern_value = ? AND category = ? AND subcategory = ?), 0) + 1,
+                    MIN(0.95, COALESCE((SELECT confidence_score FROM learning_patterns WHERE pattern_type = 'amount_range' AND pattern_value = ? AND category = ? AND subcategory = ?), 0.5) + 0.05),
+                    ?)
+                """,
+                (amount_range, category, subcategory, amount_range, category, subcategory, amount_range, category, subcategory, now)
+            )
+        
+        # Learn date patterns (day of week, month patterns)
+        if date and category:
+            day_pattern = _get_day_pattern(date)
+            cur.execute(
+                """
+                INSERT OR REPLACE INTO learning_patterns
+                (pattern_type, pattern_value, category, subcategory, frequency, confidence_score, last_updated)
+                VALUES ('day_pattern', ?, ?, ?, 
+                    COALESCE((SELECT frequency FROM learning_patterns WHERE pattern_type = 'day_pattern' AND pattern_value = ? AND category = ? AND subcategory = ?), 0) + 1,
+                    MIN(0.95, COALESCE((SELECT confidence_score FROM learning_patterns WHERE pattern_type = 'day_pattern' AND pattern_value = ? AND category = ? AND subcategory = ?), 0.5) + 0.05),
+                    ?)
+                """,
+                (day_pattern, category, subcategory, day_pattern, category, subcategory, day_pattern, category, subcategory, now)
+            )
+        
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def get_learning_suggestions(
+    description: str,
+    amount: float = None,
+    date: str = None,
+    db_path: str = DEFAULT_DB_PATH
+) -> List[Dict]:
+    """Get category suggestions based on learned patterns with contextual awareness."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.row_factory = sqlite3.Row
+        
+        suggestions = []
+        merchant = _extract_merchant_name(description)
+        
+        # Get contextual merchant suggestions (highest priority)
+        if merchant and amount and date:
+            amount_range = _get_amount_range(amount)
+            day_of_week = _get_day_of_week(date)
+            amount_pattern = _get_amount_pattern(amount)
+            
+            # Try amount range context first
+            cur.execute(
+                """
+                SELECT category, subcategory, frequency, confidence_score
+                FROM merchant_context_learning
+                WHERE merchant = ? AND context_key = 'amount_range' AND context_value = ?
+                ORDER BY frequency * confidence_score DESC
+                LIMIT 3
+                """,
+                (merchant, amount_range)
+            )
+            
+            for row in cur.fetchall():
+                suggestions.append({
+                    'method': 'merchant_context_amount',
+                    'category': row['category'],
+                    'subcategory': row['subcategory'],
+                    'confidence': row['confidence_score'] * 1.2,  # Boost for contextual matches
+                    'frequency': row['frequency'],
+                    'reason': f"'{merchant}' with similar amount (¥{amount_range}) → {row['category']} {row['frequency']} times"
+                })
+            
+            # Try day of week context
+            cur.execute(
+                """
+                SELECT category, subcategory, frequency, confidence_score
+                FROM merchant_context_learning
+                WHERE merchant = ? AND context_key = 'day_of_week' AND context_value = ?
+                ORDER BY frequency * confidence_score DESC
+                LIMIT 2
+                """,
+                (merchant, day_of_week)
+            )
+            
+            for row in cur.fetchall():
+                suggestions.append({
+                    'method': 'merchant_context_day',
+                    'category': row['category'],
+                    'subcategory': row['subcategory'],
+                    'confidence': row['confidence_score'] * 1.1,  # Slight boost for day context
+                    'frequency': row['frequency'],
+                    'reason': f"'{merchant}' on {day_of_week}s → {row['category']} {row['frequency']} times"
+                })
+            
+            # Try amount pattern context
+            cur.execute(
+                """
+                SELECT category, subcategory, frequency, confidence_score
+                FROM merchant_context_learning
+                WHERE merchant = ? AND context_key = 'amount_pattern' AND context_value = ?
+                ORDER BY frequency * confidence_score DESC
+                LIMIT 2
+                """,
+                (merchant, amount_pattern)
+            )
+            
+            for row in cur.fetchall():
+                suggestions.append({
+                    'method': 'merchant_context_pattern',
+                    'category': row['category'],
+                    'subcategory': row['subcategory'],
+                    'confidence': row['confidence_score'] * 1.15,  # Boost for pattern matches
+                    'frequency': row['frequency'],
+                    'reason': f"'{merchant}' with {amount_pattern} pattern → {row['category']} {row['frequency']} times"
+                })
+        
+        # Get general merchant-based suggestions (medium priority)
+        if merchant:
+            cur.execute(
+                """
+                SELECT category, subcategory, frequency, confidence_score
+                FROM merchant_learning
+                WHERE merchant = ?
+                ORDER BY frequency * confidence_score DESC
+                LIMIT 3
+                """,
+                (merchant,)
+            )
+            
+            for row in cur.fetchall():
+                suggestions.append({
+                    'method': 'merchant_general',
+                    'category': row['category'],
+                    'subcategory': row['subcategory'],
+                    'confidence': row['confidence_score'] * 0.9,  # Lower weight for general matches
+                    'frequency': row['frequency'],
+                    'reason': f"'{merchant}' generally categorized as {row['category']} {row['frequency']} times"
+                })
+        
+        # Get amount-based suggestions (lower priority)
+        if amount:
+            amount_range = _get_amount_range(amount)
+            cur.execute(
+                """
+                SELECT category, subcategory, frequency, confidence_score
+                FROM learning_patterns
+                WHERE pattern_type = 'amount_range' AND pattern_value = ?
+                ORDER BY frequency * confidence_score DESC
+                LIMIT 2
+                """,
+                (amount_range,)
+            )
+            
+            for row in cur.fetchall():
+                suggestions.append({
+                    'method': 'amount_range',
+                    'category': row['category'],
+                    'subcategory': row['subcategory'],
+                    'confidence': row['confidence_score'] * 0.6,  # Lower weight for amount patterns
+                    'frequency': row['frequency'],
+                    'reason': f"Amount range ¥{amount_range} → {row['category']} {row['frequency']} times"
+                })
+        
+        # Get date-based suggestions (lowest priority)
+        if date:
+            day_pattern = _get_day_pattern(date)
+            cur.execute(
+                """
+                SELECT category, subcategory, frequency, confidence_score
+                FROM learning_patterns
+                WHERE pattern_type = 'day_pattern' AND pattern_value = ?
+                ORDER BY frequency * confidence_score DESC
+                LIMIT 2
+                """,
+                (day_pattern,)
+            )
+            
+            for row in cur.fetchall():
+                suggestions.append({
+                    'method': 'day_pattern',
+                    'category': row['category'],
+                    'subcategory': row['subcategory'],
+                    'confidence': row['confidence_score'] * 0.4,  # Lowest weight for date patterns
+                    'frequency': row['frequency'],
+                    'reason': f"{day_pattern} transactions → {row['category']} {row['frequency']} times"
+                })
+        
+        # Sort by confidence and remove duplicates
+        seen = set()
+        unique_suggestions = []
+        for suggestion in sorted(suggestions, key=lambda x: x['confidence'], reverse=True):
+            key = (suggestion['category'], suggestion['subcategory'])
+            if key not in seen:
+                seen.add(key)
+                unique_suggestions.append(suggestion)
+        
+        return unique_suggestions[:5]  # Return top 5 suggestions
+        
+    finally:
+        conn.close()
+
+
+def get_learning_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict:
+    """Get statistics about the learning system."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        
+        # Merchant learning stats
+        cur.execute("SELECT COUNT(*) FROM merchant_learning")
+        total_merchant_patterns = cur.fetchone()[0]
+        
+        cur.execute("SELECT COUNT(DISTINCT merchant) FROM merchant_learning")
+        unique_merchants = cur.fetchone()[0]
+        
+        # Pattern learning stats
+        cur.execute("SELECT COUNT(*) FROM learning_patterns")
+        total_patterns = cur.fetchone()[0]
+        
+        # Recent learning activity (last 30 days)
+        thirty_days_ago = (datetime.now() - pd.Timedelta(days=30)).isoformat()
+        cur.execute("SELECT COUNT(*) FROM merchant_learning WHERE last_updated > ?", (thirty_days_ago,))
+        recent_learning = cur.fetchone()[0]
+        
+        return {
+            'total_merchant_patterns': total_merchant_patterns,
+            'unique_merchants': unique_merchants,
+            'total_patterns': total_patterns,
+            'recent_learning': recent_learning
+        }
+    finally:
+        conn.close()
+
+
+def _extract_merchant_name(description: str) -> str:
+    """Extract merchant name from transaction description."""
+    import re
+    
+    # Remove common prefixes and suffixes
+    desc = description.lower().strip()
+    
+    # Common patterns to remove
+    patterns_to_remove = [
+        r'visa\s+domestic\s+use\s+vs\s+',
+        r'credit\s+card\s+',
+        r'debit\s+card\s+',
+        r'atm\s+',
+        r'pos\s+',
+        r'\d+',  # Remove numbers
+        r'[^\w\s]',  # Remove special characters
+    ]
+    
+    merchant = desc
+    for pattern in patterns_to_remove:
+        merchant = re.sub(pattern, '', merchant)
+    
+    # Clean up whitespace
+    merchant = ' '.join(merchant.split())
+    
+    return merchant if merchant else "unknown"
+
+
+def _get_amount_range(amount: float) -> str:
+    """Get amount range for pattern learning."""
+    abs_amount = abs(amount)
+    
+    if abs_amount < 100:
+        return "0-100"
+    elif abs_amount < 500:
+        return "100-500"
+    elif abs_amount < 1000:
+        return "500-1000"
+    elif abs_amount < 5000:
+        return "1000-5000"
+    elif abs_amount < 10000:
+        return "5000-10000"
+    elif abs_amount < 50000:
+        return "10000-50000"
+    else:
+        return "50000+"
+
+
+def _get_day_pattern(date: str) -> str:
+    """Get day pattern for learning (weekday/weekend)."""
+    try:
+        from datetime import datetime
+        date_obj = datetime.strptime(date, '%Y-%m-%d')
+        if date_obj.weekday() < 5:  # Monday = 0, Sunday = 6
+            return "weekday"
+        else:
+            return "weekend"
+    except:
+        return "unknown"
+
+
+def _get_day_of_week(date: str) -> str:
+    """Get day of week for contextual learning."""
+    try:
+        from datetime import datetime
+        date_obj = datetime.strptime(date, '%Y-%m-%d')
+        days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
+        return days[date_obj.weekday()]
+    except:
+        return "unknown"
+
+
+def _get_amount_pattern(amount: float) -> str:
+    """Get specific amount pattern for contextual learning."""
+    abs_amount = abs(amount)
+    
+    # Common transaction patterns
+    if abs_amount == int(abs_amount):  # Round numbers
+        if abs_amount < 100:
+            return "small_round"
+        elif abs_amount < 1000:
+            return "medium_round"
+        else:
+            return "large_round"
+    elif abs_amount % 100 == 0:  # Hundreds
+        return "hundreds"
+    elif abs_amount % 50 == 0:  # Fifties
+        return "fifties"
+    elif abs_amount % 10 == 0:  # Tens
+        return "tens"
+    else:
+        return "irregular"
 
 
 
