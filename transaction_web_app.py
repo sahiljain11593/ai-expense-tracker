@@ -95,8 +95,24 @@ except Exception:
     def require_auth() -> bool:  # fallback no-auth when module unavailable
         return True
 
+# Advanced AI and Analytics modules
+try:
+    from ml_engine import EnsembleCategorizationEngine, LocalMLTrainer
+    from insights_engine import InsightsEngine, SpendingAnalytics
+    from dashboard import ModernDashboard, InteractiveFilters
+    ADVANCED_FEATURES_AVAILABLE = True
+except Exception as _e:
+    # Graceful fallback if advanced features not available
+    EnsembleCategorizationEngine = None  # type: ignore
+    LocalMLTrainer = None  # type: ignore
+    InsightsEngine = None  # type: ignore
+    SpendingAnalytics = None  # type: ignore
+    ModernDashboard = None  # type: ignore
+    InteractiveFilters = None  # type: ignore
+    ADVANCED_FEATURES_AVAILABLE = False
+
 # Wide layout for more horizontal space
-st.set_page_config(layout="wide")
+st.set_page_config(layout="wide", page_title="AI Expense Tracker", page_icon="💰")
 
 # Smart Learning System (now using built-in MerchantLearningSystem class)
 
@@ -1317,6 +1333,22 @@ def main() -> None:
     learning_system = MerchantLearningSystem()
     st.sidebar.success("🧠 Merchant Learning System Active")
     
+    # Initialize Advanced AI Engines
+    if ADVANCED_FEATURES_AVAILABLE:
+        if 'ensemble_engine' not in st.session_state:
+            st.session_state['ensemble_engine'] = EnsembleCategorizationEngine()
+        
+        if 'insights_engine' not in st.session_state:
+            st.session_state['insights_engine'] = InsightsEngine()
+        
+        if 'dashboard' not in st.session_state:
+            st.session_state['dashboard'] = ModernDashboard()
+        
+        if 'ml_trainer' not in st.session_state:
+            st.session_state['ml_trainer'] = LocalMLTrainer()
+        
+        st.sidebar.success("✨ Advanced AI Features Active")
+    
     # AI Translation Setup
     st.sidebar.header("🤖 AI Translation Settings")
     st.sidebar.write("For best Japanese translation accuracy, use OpenAI GPT-3.5")
@@ -1490,6 +1522,76 @@ def main() -> None:
                         ]
                     
                     st.caption(f"Showing {len(df_filtered)} of {len(df_saved)} transactions")
+                    
+                    # ========================================================================
+                    # ENHANCED DASHBOARD WITH ADVANCED VISUALIZATIONS
+                    # ========================================================================
+                    if ADVANCED_FEATURES_AVAILABLE and len(df_filtered) > 0:
+                        st.divider()
+                        st.subheader("📊 Enhanced Analytics Dashboard")
+                        
+                        # Get dashboard from session state
+                        dashboard = st.session_state.get('dashboard')
+                        if dashboard:
+                            # Create tabs for different views
+                            dash_tab1, dash_tab2, dash_tab3, dash_tab4 = st.tabs([
+                                "💰 Overview", "📈 Trends", "🎯 Categories", "💡 Insights"
+                            ])
+                            
+                            with dash_tab1:
+                                # Hero metrics with trends
+                                st.markdown("### Key Metrics")
+                                transactions_list = df_filtered.to_dict('records')
+                                dashboard.render_hero_metrics(transactions_list)
+                                
+                                # Quick charts
+                                col1, col2 = st.columns(2)
+                                with col1:
+                                    dashboard.render_category_breakdown_chart(transactions_list)
+                                with col2:
+                                    dashboard.render_spending_heatmap(transactions_list)
+                            
+                            with dash_tab2:
+                                # Trend analysis
+                                st.markdown("### Spending Trends Over Time")
+                                dashboard.render_monthly_trend_chart(transactions_list)
+                                dashboard.render_comparison_view(transactions_list)
+                            
+                            with dash_tab3:
+                                # Category analysis
+                                st.markdown("### Category Deep Dive")
+                                dashboard.render_category_trend_chart(transactions_list, top_n=5)
+                                dashboard.render_top_merchants_chart(transactions_list, top_n=10)
+                            
+                            with dash_tab4:
+                                # AI-powered insights
+                                st.markdown("### AI-Powered Financial Insights")
+                                insights_engine = st.session_state.get('insights_engine')
+                                if insights_engine:
+                                    with st.spinner("🤖 Generating insights..."):
+                                        report = insights_engine.generate_comprehensive_report(transactions_list)
+                                        dashboard.render_ai_insights_panel(
+                                            report.get('insights', []),
+                                            report.get('recommendations', [])
+                                        )
+                                        
+                                        # Show forecasts if available
+                                        if report.get('forecasts') and report['forecasts'].get('forecasts'):
+                                            st.markdown("### 🔮 Spending Forecast")
+                                            forecasts = report['forecasts']['forecasts']
+                                            forecast_df = pd.DataFrame([
+                                                {'Month': k, 'Forecasted Spending': v}
+                                                for k, v in forecasts.items()
+                                            ])
+                                            st.bar_chart(forecast_df.set_index('Month'))
+                                            st.caption(f"Confidence: {report['forecasts'].get('confidence', 'unknown').upper()}")
+                                else:
+                                    st.info("💡 Insights engine not available")
+                        else:
+                            st.info("Enhanced dashboard not initialized. Refresh the page to enable advanced features.")
+                    elif ADVANCED_FEATURES_AVAILABLE:
+                        st.info("📊 Enhanced dashboard available - filter some transactions to see advanced analytics!")
+                    # ========================================================================
                     
                     # Display transactions
                     st.subheader("📋 Transactions")
