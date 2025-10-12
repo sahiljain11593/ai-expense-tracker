@@ -32,7 +32,7 @@ AI-powered expense tracking web app for single-user personal finance management 
    - Filters and search
    - Charts and visualizations
 
-2. **data_store.py** (Database Layer - 889 lines)
+2. **data_store.py** (Database Layer - 936 lines)
    - SQLite operations
    - Schema: transactions, imports, settings, recurring_rules
    - Strict dedupe: hash(date|description|amount)
