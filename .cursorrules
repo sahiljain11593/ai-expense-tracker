@@ -1,0 +1,386 @@
+# AI Expense Tracker - Cursor Context
+
+**Last Updated**: October 12, 2025
+**Version**: v2.0 (Post-fuzzy-dedupe-and-testing)
+**Status**: ✅ Production Ready
+
+## 🎯 Project Overview
+
+AI-powered expense tracking web app for single-user personal finance management with Japanese transaction support.
+
+- **Live App**: https://sahiljain11593-ai-expense-tracker-transaction-web-app-lu0rff.streamlit.app/
+- **GitHub**: https://github.com/sahiljain11593/ai-expense-tracker
+- **Platform**: Streamlit (Python) + SQLite
+- **User**: Single-user (Gmail-based auth)
+
+## 📁 Project Location
+
+```
+~/projects/ai-expense-tracker/
+```
+
+## 🏗️ Architecture
+
+### Core Components
+
+   - Streamlit web interface (2404+ lines)
+   - Streamlit web interface
+   - File upload (CSV/PDF/Image)
+   - Japanese → English translation (OpenAI or Google fallback)
+   - Auto-categorization with learning
+   - Transaction editing and review
+   - Filters and search
+   - Charts and visualizations
+
+2. **data_store.py** (Database Layer - 539 lines)
+   - SQLite operations
+   - Schema: transactions, imports, settings, recurring_rules
+   - Strict dedupe: hash(date|description|amount)
+   - Fuzzy dedupe: configurable similarity matching
+   - Backup and export functions
+
+3. **auth_ui.py** (Authentication)
+   - Firebase Google Sign-In
+   - Single-user gate (allowed_email)
+   - Bypasses if no auth.allowed_email configured
+
+4. **drive_backup.py** (Cloud Backup)
+   - Google OAuth flow
+   - Upload DB backups to Drive
+   - Upload CSV exports to Drive
+
+### Database Schema
+
+```sql
+-- SQLite at data/expenses.db
+transactions (
+  id, date, description, original_description, amount,
+  currency, fx_rate, amount_jpy, category, subcategory,
+  transaction_type, import_batch_id, dedupe_hash, created_at
+)
+
+imports (id, file_name, imported_at, num_rows)
+
+settings (key TEXT PRIMARY KEY, value TEXT)
+
+recurring_rules (
+  id, merchant_pattern, frequency, next_date, amount,
+  category, subcategory, currency, active
+)
+```
+
+## ✨ Features Implemented
+
+### Core Features ✅
+- ✅ Multi-format ingestion (CSV/PDF/Image)
+- ✅ Japanese → English translation (AI + fallback)
+- ✅ Auto-categorization (10+ categories)
+- ✅ Multi-currency with FX conversion to JPY
+- ✅ Strict duplicate detection (exact match)
+- ✅ Transaction editing and corrections
+- ✅ SQLite persistence (local-first)
+- ✅ CSV export with sanitize option
+- ✅ Local DB backup
+- ✅ Charts and visualizations
+
+### Advanced Features ✅
+- ✅ **Fuzzy Duplicate Detection** (NEW)
+  - Configurable similarity threshold (50-100%, default 85%)
+  - Date range tolerance (±0-7 days)
+  - Amount tolerance (±0-10%)
+  - Interactive duplicate finder tool
+  
+- ✅ **Transaction Filters** (NEW)
+  - Filter by category
+  - Filter by transaction type (Expense/Credit)
+  - Filter by currency
+  - Search descriptions
+  
+- ✅ **Recurring Transactions**
+  - Create rules (monthly/weekly)
+  - Preview next instances
+  - Auto-generate transactions
+  
+- ✅ **Google Drive Backup**
+  - OAuth authorization
+  - Upload DB backups
+  - Upload CSV exports
+
+### Security & Testing ✅
+- ✅ Firebase authentication (optional)
+- ✅ Scoped GitHub token for AI agents
+- ✅ No PII in logs
+- ✅ Sanitized exports
+- ✅ Comprehensive pytest suite (26 tests, all passing)
+- ✅ E2E smoke test
+
+## 🧪 Testing
+
+### Run Tests
+```bash
+# Full test suite
+pytest -v
+
+# Specific tests
+pytest tests/test_import_dedupe.py -v
+pytest tests/test_recurring.py -v
+
+# E2E smoke test
+python scripts/e2e_check.py
+```
+
+### Test Coverage
+- 26 total tests, all passing ✅
+- Import/dedupe logic (12 tests)
+- Recurring transactions (14 tests)
+- Settings persistence
+- Fuzzy matching with tolerances
+
+## 🔧 Development Commands
+
+### Setup
+```bash
+cd ~/projects/ai-expense-tracker
+
+# Activate venv
+source .venv/bin/activate
+
+# Install dependencies
+pip install -r requirements.txt
+
+# Run app locally
+streamlit run transaction_web_app.py
+```
+
+### Git Operations
+```bash
+# Using scoped token (configured)
+git status
+git add .
+git commit -m "feat: description"
+git push origin main
+
+# Token location: ~/.git-credentials-ai
+# See TOKEN_MANAGEMENT.md for details
+```
+
+### Database
+```bash
+# View database
+sqlite3 data/expenses.db
+
+# Common queries
+SELECT COUNT(*) FROM transactions;
+SELECT * FROM settings;
+SELECT * FROM recurring_rules WHERE active=1;
+```
+
+## 🔐 Security Configuration
+
+### Secrets (Streamlit Cloud)
+All configured in Settings → Secrets:
+
+```toml
+[firebase]
+apiKey = "..."
+authDomain = "..."
+projectId = "..."
+appId = "..."
+
+[auth]
+allowed_email = "your@gmail.com"
+
+[google]
+client_id = "..."
+client_secret = "..."
+redirect_uri = "https://your-app.streamlit.app"
+drive_folder_id = ""
+```
+
+### GitHub Token (AI Sessions)
+- Scoped token stored in `~/.git-credentials-ai`
+- Repository-specific configuration
+- See `TOKEN_MANAGEMENT.md` for management
+- Revoke after sessions for security
+
+## 📝 Code Conventions
+
+### File Organization
+- UI logic: `transaction_web_app.py`
+- Data layer: `data_store.py`
+- Tests: `tests/` directory
+- Scripts: `scripts/` directory
+- Docs: `*.md` files at root
+
+### Naming Conventions
+- Functions: `snake_case`
+- Classes: `PascalCase`
+- Constants: `UPPER_SNAKE_CASE`
+- Files: `lowercase_with_underscores.py`
+
+### Database Operations
+- Always use `data_store.py` functions
+- Never direct SQL in UI layer
+- Use context managers for connections
+- Close connections in finally blocks
+
+### Testing
+- Test files: `test_*.py`
+- Use pytest fixtures
+- Temp databases for tests
+- Mock external services (OpenAI, Google APIs)
+
+## 🚀 Deployment
+
+### Streamlit Cloud
+- **Auto-deploys** on push to main
+- **Build time**: 2-5 minutes
+- **Monitor**: https://share.streamlit.io
+- **Storage**: Ephemeral (resets on rebuild)
+
+### Backup Strategy
+1. **Weekly**: Manual Drive backup
+2. **After imports**: Backup before major changes
+3. **Monthly**: Download backup from Drive locally
+
+## 📚 Key Files Reference
+
+### Documentation
+- `README.md` - Main documentation
+- `SECURITY.md` - Security policy and best practices
+- `DEPLOYMENT_CHECKLIST.md` - Testing checklist
+- `TOKEN_MANAGEMENT.md` - GitHub token guide
+- `.cursorrules` - This file (Cursor context)
+
+### Configuration
+- `requirements.txt` - Python dependencies
+- `pytest.ini` - Test configuration
+- `.gitignore` - Git exclusions (includes data/, exports/, backups/)
+
+### Tests
+- `tests/test_import_dedupe.py` - Import and deduplication tests
+- `tests/test_recurring.py` - Recurring transaction tests
+- `tests/conftest.py` - Pytest fixtures
+- `scripts/e2e_check.py` - E2E smoke test
+
+## 🎨 UI Structure
+
+### Main Flow
+1. Authentication (if configured)
+2. File upload
+3. Column mapping/detection
+4. Translation (if Japanese)
+5. Auto-categorization
+6. Review and edit
+7. Filters and search
+8. Save to database
+9. Charts and visualizations
+
+### Key UI Sections
+- **Quick Start Guide** (collapsible)
+- **File Upload** (CSV/PDF/Image)
+- **Transaction Review** (data editor)
+- **Filters** (category, type, currency, search)
+- **Categorization** (bulk actions)
+- **Charts** (spending by category, timeline)
+- **Save & Export** (DB, CSV, Drive)
+- **Recurring Transactions** (rules management)
+- **Dedupe Settings** (configurable thresholds)
+
+## 🐛 Common Issues & Solutions
+
+### Issue: Import fails
+- Check file format (CSV/PDF/Image)
+- Verify columns are detected
+- Check for encoding issues (UTF-8)
+
+### Issue: Translation doesn't work
+- OpenAI API key configured?
+- Falls back to Google Translate automatically
+- Check network connection
+
+### Issue: Duplicates not detected
+- Check dedupe settings (⚙️ section)
+- Verify similarity threshold
+- Ensure dates match (or adjust tolerance)
+
+### Issue: Tests failing
+- Run `pip install -r requirements.txt`
+- Check pytest version
+- Ensure temp databases are cleaned up
+
+### Issue: Git push fails
+- Check token is valid: `git ls-remote origin`
+- Verify token hasn't expired
+- See TOKEN_MANAGEMENT.md
+
+## 🔄 Recent Changes (Last Session)
+
+### October 12, 2025
+1. ✅ Added configurable fuzzy duplicate detection
+2. ✅ Created comprehensive pytest suite (26 tests)
+3. ✅ Enhanced security documentation
+4. ✅ Added transaction filters UI
+5. ✅ Improved onboarding (collapsible guide)
+6. ✅ Set up scoped GitHub token for AI sessions
+7. ✅ Moved project to ~/projects/ folder
+8. ✅ Updated all documentation
+
+## 🎯 What to Work on Next
+
+### Potential Enhancements
+- [ ] Add date range filter for transactions
+- [ ] Implement category learning improvements
+- [ ] Add bulk edit for multiple transactions
+- [ ] Create monthly spending report PDF export
+- [ ] Add data visualization dashboard
+- [ ] Implement budget tracking
+- [ ] Add transaction tags/labels
+- [ ] Create mobile-responsive improvements
+
+### Technical Debt
+- [ ] Consider migrating to Supabase for persistence
+- [ ] Add more comprehensive logging
+- [ ] Implement caching for FX rates
+- [ ] Add transaction history/audit trail
+- [ ] Optimize large CSV imports
+
+## 💡 Tips for AI Agents
+
+### When Making Changes
+1. **Always run tests** after changes: `pytest -v`
+2. **Update this file** after major features
+3. **Check linting** before committing
+4. **Test locally** before pushing: `streamlit run transaction_web_app.py`
+5. **Use scoped token** (already configured)
+
+### Code Quality
+- Write tests for new features
+- Update documentation
+- Follow existing patterns
+- Keep functions focused and small
+- Use type hints where helpful
+
+### Database Changes
+- Test with temp DB first
+- Update schema comments
+- Create migration script if needed
+- Backup before schema changes
+
+### UI Changes
+- Keep it simple and fast
+- Use Streamlit caching (`@st.cache_data`)
+- Test with sample data
+- Ensure mobile-friendly
+
+## 📞 Support Resources
+
+- **GitHub Issues**: For bugs and feature requests
+- **Streamlit Docs**: https://docs.streamlit.io
+- **SQLite Docs**: https://sqlite.org/docs.html
+- **Pytest Docs**: https://docs.pytest.org
+
+---
+
+**Remember**: This is a production app with real financial data. Always test changes thoroughly and maintain backups! 🔒
+
