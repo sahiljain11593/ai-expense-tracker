@@ -603,7 +603,8 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             })
             
         except Exception as e:
-            st.warning(f"Error processing row {idx + 1}: {row}. Error: {e}")
+            # Avoid logging full row contents to prevent PII exposure
+            st.warning(f"Error processing row {idx + 1}: {e}")
             continue
     
     # Complete progress bar
@@ -1218,6 +1219,54 @@ def main() -> None:
     # Initialize Merchant Learning System
     learning_system = MerchantLearningSystem()
     st.sidebar.success("🧠 Merchant Learning System Active")
+
+    # App Settings (persisted)
+    st.sidebar.header("⚙️ App Settings")
+    # Load saved settings
+    saved_threshold = None
+    saved_sanitize_default = None
+    saved_default_currency = None
+    try:
+        if get_setting:
+            saved_threshold = get_setting("dedupe_similarity_threshold")
+            saved_sanitize_default = get_setting("sanitize_default")
+            saved_default_currency = get_setting("default_currency")
+    except Exception:
+        pass
+
+    try:
+        dedupe_similarity_threshold = float(saved_threshold) if saved_threshold is not None else 0.85
+    except Exception:
+        dedupe_similarity_threshold = 0.85
+    try:
+        sanitize_default = bool(int(saved_sanitize_default)) if saved_sanitize_default is not None else False
+    except Exception:
+        sanitize_default = False
+    default_currency_setting = (saved_default_currency or "JPY").upper()
+
+    dedupe_similarity_threshold = st.sidebar.number_input(
+        "Dedupe merchant similarity (0.0 - 1.0)",
+        min_value=0.0,
+        max_value=1.0,
+        value=float(dedupe_similarity_threshold),
+        step=0.01,
+        help="Higher = stricter. Used for potential duplicate review only."
+    )
+    sanitize_default_ui = st.sidebar.checkbox(
+        "Sanitize exports by default",
+        value=bool(sanitize_default),
+        help="Removes Original/Japanese text from CSV exports."
+    )
+
+    if st.sidebar.button("💾 Save settings"):
+        try:
+            if set_setting:
+                set_setting("dedupe_similarity_threshold", f"{dedupe_similarity_threshold:.2f}")
+                set_setting("sanitize_default", "1" if sanitize_default_ui else "0")
+                # default currency will be saved when selected below
+            st.sidebar.success("Settings saved")
+        except Exception as e:
+            st.sidebar.error(f"Failed to save settings: {e}")
     
     # AI Translation Setup
     st.sidebar.header("🤖 AI Translation Settings")
@@ -1407,12 +1456,23 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
         }
         # Currency settings and FX normalization
         st.subheader("💱 Currency & FX")
+        currency_options = ["JPY", "USD", "EUR", "AUD", "CAD", "GBP", "CNY", "KRW"]
+        try:
+            default_index = currency_options.index(default_currency_setting) if default_currency_setting in currency_options else 0
+        except Exception:
+            default_index = 0
         default_currency = st.selectbox(
             "Statement currency (applied when missing)",
-            options=["JPY", "USD", "EUR", "AUD", "CAD", "GBP", "CNY", "KRW"],
-            index=0,
+            options=currency_options,
+            index=default_index,
             help="Used to convert amounts to JPY for totals."
         )
+        # Persist default currency choice
+        try:
+            if set_setting:
+                set_setting("default_currency", default_currency)
+        except Exception:
+            pass
 
         df = enrich_currency_columns(df, default_currency)
 
@@ -1948,29 +2008,56 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                             "subcategory": r.get("subcategory"),
                             "transaction_type": r.get("transaction_type"),
                         })
-                    # Lightweight potential duplicate detection: same date & amount
+                    # Potential duplicate detection: same date & amount + fuzzy merchant similarity
                     pot_dupes = []
+                    def _normalize_text(t: str) -> str:
+                        try:
+                            t2 = unicodedata.normalize('NFKC', str(t or "").lower())
+                            return re.sub(r"[\s\W_]+", "", t2)
+                        except Exception:
+                            return str(t or "").strip().lower()
+                    def _similarity(a: str, b: str) -> float:
+                        try:
+                            import difflib
+                            return float(difflib.SequenceMatcher(None, a, b).ratio())
+                        except Exception:
+                            return 0.0
                     try:
                         existing = pd.DataFrame(load_all_transactions() or []) if load_all_transactions else pd.DataFrame()
                         if not existing.empty:
                             existing['date'] = pd.to_datetime(existing['date']).dt.strftime('%Y-%m-%d')
+                            # Refresh threshold from settings if available
+                            try:
+                                threshold = float(get_setting("dedupe_similarity_threshold") or dedupe_similarity_threshold) if get_setting else dedupe_similarity_threshold
+                            except Exception:
+                                threshold = dedupe_similarity_threshold
                             for row in review_rows:
                                 date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
-                                match = existing[(existing['date'] == date_str) & (existing['amount'].round(2) == round(row['amount'], 2))]
-                                if len(match) > 0:
-                                    pot_dupes.append({
-                                        "date": date_str,
-                                        "amount": row['amount'],
-                                        "new_description": row['description'],
-                                        "existing_count": int(len(match))
-                                    })
+                                candidates = existing[(existing['date'] == date_str) & (existing['amount'].round(2) == round(row['amount'], 2))]
+                                if not candidates.empty:
+                                    new_norm = _normalize_text(row['description'])
+                                    for _, ex in candidates.iterrows():
+                                        ex_desc = ex.get('description', '')
+                                        ex_norm = _normalize_text(ex_desc)
+                                        sim = _similarity(new_norm, ex_norm)
+                                        if new_norm == ex_norm or sim >= float(threshold):
+                                            pot_dupes.append({
+                                                "date": date_str,
+                                                "amount": row['amount'],
+                                                "new_description": row['description'],
+                                                "existing_description": ex_desc,
+                                                "similarity": round(sim, 3)
+                                            })
                     except Exception:
                         pass
 
                     if pot_dupes:
-                        st.warning("Potential duplicates detected. Review below; choose whether to insert them.")
-                        st.dataframe(pd.DataFrame(pot_dupes))
-                        insert_suspected = st.checkbox("Insert suspected duplicates too", value=False)
+                        st.warning("Potential duplicates detected (same date & amount; fuzzy merchant match). Review below.")
+                        df_dupes = pd.DataFrame(pot_dupes)
+                        if 'similarity' in df_dupes.columns:
+                            df_dupes = df_dupes.sort_values(by=['similarity'], ascending=False)
+                        st.dataframe(df_dupes)
+                        insert_suspected = st.checkbox("Insert suspected duplicates as well", value=False)
                     else:
                         insert_suspected = True
 
@@ -1991,7 +2078,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 st.caption("Cannot save yet: data layer not ready or required columns missing.")
 
         with col_save2:
-            sanitize = st.checkbox("Sanitize exports (remove Original/Japanese text)", value=False)
+            sanitize = st.checkbox("Sanitize exports (remove Original/Japanese text)", value=bool(sanitize_default_ui))
             if st.button("🧾 Export DB to CSV") and export_transactions_to_csv is not None:
                 try:
                     if sanitize and load_all_transactions is not None:
@@ -2153,17 +2240,31 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                         except Exception as e:
                             st.error(f"Drive DB backup failed: {e}")
                 with col_g2:
+                    drive_sanitize = st.checkbox("Sanitize CSV before upload", value=bool(sanitize_default_ui))
                     if st.button("📤 Export CSV to Drive"):
                         try:
-                            csv_path = export_transactions_to_csv() if export_transactions_to_csv else None
-                            if csv_path:
-                                with open(csv_path, "rb") as f:
-                                    data = f.read()
+                            data = None
+                            filename = None
+                            if drive_sanitize and load_all_transactions is not None:
+                                rows = load_all_transactions()
+                                df_all = pd.DataFrame(rows)
+                                if 'original_description' in df_all.columns:
+                                    df_all = df_all.drop(columns=['original_description'])
+                                ts = pd.Timestamp.now().strftime('%Y%m%d_%H%M%S')
+                                filename = f'transactions_sanitized_{ts}.csv'
+                                data = df_all.to_csv(index=False).encode('utf-8')
+                            else:
+                                csv_path = export_transactions_to_csv() if export_transactions_to_csv else None
+                                if csv_path and os.path.exists(csv_path):
+                                    with open(csv_path, "rb") as f:
+                                        data = f.read()
+                                    filename = os.path.basename(csv_path)
+                            if data:
                                 folder_id = st.secrets.get("google", {}).get("drive_folder_id")
-                                link = upload_bytes(creds, folder_id, os.path.basename(csv_path), data, mime="text/csv")
+                                link = upload_bytes(creds, folder_id, filename or "transactions.csv", data, mime="text/csv")
                                 st.success(f"CSV uploaded: {link}")
                             else:
-                                st.warning("CSV export function not available.")
+                                st.warning("No CSV to upload.")
                         except Exception as e:
                             st.error(f"Drive CSV upload failed: {e}")
         except Exception as e:

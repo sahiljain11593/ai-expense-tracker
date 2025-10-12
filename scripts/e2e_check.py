@@ -60,6 +60,9 @@ def main():
         })
     inserted, dupes, _ = insert_transactions(rows, batch_id)
     print(f"Inserted: {inserted}, Duplicates: {dupes}")
+    # Re-run insert to ensure strict duplicates are skipped
+    inserted2, dupes2, _ = insert_transactions(rows, batch_id)
+    print(f"Re-insert attempt -> Inserted: {inserted2}, Duplicates: {dupes2}")
     csv_path = export_transactions_to_csv()
     print("Exported CSV:", csv_path)
     bkp_path = backup_database()
