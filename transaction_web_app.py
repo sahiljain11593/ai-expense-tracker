@@ -1302,6 +1302,196 @@ def main() -> None:
                                 for score in merchant_scores.values() if score >= 0.8)
             st.sidebar.write(f"• High Confidence: {high_confidence}")
     
+    # View Saved Transactions Section
+    st.divider()
+    with st.expander("📊 View Saved Transactions", expanded=False):
+        if load_all_transactions is not None:
+            try:
+                saved_transactions = load_all_transactions()
+                
+                if saved_transactions and len(saved_transactions) > 0:
+                    df_saved = pd.DataFrame(saved_transactions)
+                    
+                    # Summary statistics
+                    st.subheader("📈 Summary")
+                    col1, col2, col3, col4 = st.columns(4)
+                    
+                    with col1:
+                        st.metric("Total Transactions", len(df_saved))
+                    with col2:
+                        total_expenses = df_saved[df_saved['transaction_type'] == 'Expense']['amount_jpy'].sum()
+                        st.metric("Total Expenses", f"¥{abs(total_expenses):,.0f}")
+                    with col3:
+                        total_credits = df_saved[df_saved['transaction_type'] == 'Credit']['amount_jpy'].sum()
+                        st.metric("Total Credits", f"¥{total_credits:,.0f}")
+                    with col4:
+                        net = total_credits + total_expenses  # expenses are negative
+                        st.metric("Net", f"¥{net:,.0f}", delta_color="normal")
+                    
+                    # Date range info
+                    if 'date' in df_saved.columns:
+                        df_saved['date'] = pd.to_datetime(df_saved['date'])
+                        min_date = df_saved['date'].min().strftime('%Y-%m-%d')
+                        max_date = df_saved['date'].max().strftime('%Y-%m-%d')
+                        st.caption(f"📅 Date range: {min_date} to {max_date}")
+                    
+                    st.divider()
+                    
+                    # Filters for saved transactions
+                    st.subheader("🔍 Filter Saved Transactions")
+                    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 1, 1, 1])
+                    
+                    with filter_col1:
+                        saved_categories = st.multiselect(
+                            "Categories",
+                            options=sorted(df_saved['category'].dropna().unique()) if 'category' in df_saved.columns else [],
+                            default=None,
+                            key="saved_cat_filter"
+                        )
+                    
+                    with filter_col2:
+                        saved_types = st.multiselect(
+                            "Type",
+                            options=df_saved['transaction_type'].dropna().unique() if 'transaction_type' in df_saved.columns else [],
+                            default=None,
+                            key="saved_type_filter"
+                        )
+                    
+                    with filter_col3:
+                        if 'date' in df_saved.columns:
+                            date_from = st.date_input("From Date", value=None, key="saved_date_from")
+                            date_to = st.date_input("To Date", value=None, key="saved_date_to")
+                        else:
+                            date_from = None
+                            date_to = None
+                    
+                    with filter_col4:
+                        saved_search = st.text_input(
+                            "Search Description",
+                            placeholder="Search...",
+                            key="saved_search"
+                        )
+                    
+                    # Apply filters
+                    df_filtered = df_saved.copy()
+                    
+                    if saved_categories:
+                        df_filtered = df_filtered[df_filtered['category'].isin(saved_categories)]
+                    
+                    if saved_types:
+                        df_filtered = df_filtered[df_filtered['transaction_type'].isin(saved_types)]
+                    
+                    if date_from and 'date' in df_filtered.columns:
+                        df_filtered = df_filtered[df_filtered['date'] >= pd.Timestamp(date_from)]
+                    
+                    if date_to and 'date' in df_filtered.columns:
+                        df_filtered = df_filtered[df_filtered['date'] <= pd.Timestamp(date_to)]
+                    
+                    if saved_search:
+                        df_filtered = df_filtered[
+                            df_filtered['description'].str.contains(saved_search, case=False, na=False)
+                        ]
+                    
+                    st.caption(f"Showing {len(df_filtered)} of {len(df_saved)} transactions")
+                    
+                    # Display transactions
+                    st.subheader("📋 Transactions")
+                    
+                    # Prepare display columns
+                    display_columns = ['date', 'description', 'amount_jpy', 'category', 'transaction_type']
+                    if 'original_description' in df_filtered.columns:
+                        display_columns.insert(2, 'original_description')
+                    
+                    # Filter to display columns that exist
+                    display_columns = [col for col in display_columns if col in df_filtered.columns]
+                    
+                    # Sort by date descending (most recent first)
+                    df_display = df_filtered[display_columns].sort_values('date', ascending=False)
+                    
+                    # Format the dataframe for display
+                    if 'date' in df_display.columns:
+                        df_display['date'] = df_display['date'].dt.strftime('%Y-%m-%d')
+                    
+                    st.dataframe(
+                        df_display,
+                        use_container_width=True,
+                        hide_index=True,
+                        column_config={
+                            'date': st.column_config.TextColumn('Date', width='small'),
+                            'description': st.column_config.TextColumn('Description', width='medium'),
+                            'original_description': st.column_config.TextColumn('Original (JA)', width='medium'),
+                            'amount_jpy': st.column_config.NumberColumn('Amount (¥)', format="¥%.0f"),
+                            'category': st.column_config.TextColumn('Category', width='small'),
+                            'transaction_type': st.column_config.TextColumn('Type', width='small'),
+                        }
+                    )
+                    
+                    # Charts
+                    st.divider()
+                    st.subheader("📊 Analytics")
+                    
+                    chart_col1, chart_col2 = st.columns(2)
+                    
+                    with chart_col1:
+                        st.write("**Spending by Category**")
+                        if 'category' in df_filtered.columns and 'amount_jpy' in df_filtered.columns:
+                            # Filter expenses only
+                            expenses_df = df_filtered[df_filtered['transaction_type'] == 'Expense'].copy()
+                            if not expenses_df.empty:
+                                category_spending = expenses_df.groupby('category')['amount_jpy'].sum().abs()
+                                st.bar_chart(category_spending)
+                            else:
+                                st.info("No expense transactions in filtered data")
+                    
+                    with chart_col2:
+                        st.write("**Monthly Trend**")
+                        if 'date' in df_filtered.columns and 'amount_jpy' in df_filtered.columns:
+                            df_monthly = df_filtered.copy()
+                            df_monthly['month'] = pd.to_datetime(df_monthly['date']).dt.to_period('M').astype(str)
+                            monthly_totals = df_monthly.groupby('month')['amount_jpy'].sum()
+                            st.line_chart(monthly_totals)
+                    
+                    # Export filtered data
+                    st.divider()
+                    col_exp1, col_exp2 = st.columns(2)
+                    
+                    with col_exp1:
+                        # Export filtered transactions
+                        if st.button("📥 Export Filtered Data"):
+                            csv = df_filtered.to_csv(index=False)
+                            st.download_button(
+                                label="Download CSV",
+                                data=csv,
+                                file_name=f"filtered_transactions_{pd.Timestamp.now().strftime('%Y%m%d_%H%M')}.csv",
+                                mime="text/csv"
+                            )
+                    
+                    with col_exp2:
+                        # Quick stats
+                        if st.button("📊 Show Statistics"):
+                            st.write("**Filtered Data Statistics:**")
+                            st.write(f"- Transactions: {len(df_filtered)}")
+                            if 'amount_jpy' in df_filtered.columns:
+                                st.write(f"- Total Amount: ¥{df_filtered['amount_jpy'].sum():,.0f}")
+                                st.write(f"- Average: ¥{df_filtered['amount_jpy'].mean():,.0f}")
+                                st.write(f"- Min: ¥{df_filtered['amount_jpy'].min():,.0f}")
+                                st.write(f"- Max: ¥{df_filtered['amount_jpy'].max():,.0f}")
+                
+                else:
+                    st.info("📭 No saved transactions yet. Upload and save some transactions to see them here!")
+                    st.write("**How to save transactions:**")
+                    st.write("1. Upload a CSV/PDF/Image file below")
+                    st.write("2. Review the categorized transactions")
+                    st.write("3. Click '💾 Save processed transactions to DB'")
+                    st.write("4. Come back here to view and analyze your saved data!")
+            
+            except Exception as e:
+                st.error(f"Error loading saved transactions: {e}")
+        else:
+            st.warning("Database not available. Cannot load saved transactions.")
+    
+    st.divider()
+    
     # File upload
     uploaded_file = st.file_uploader("Choose a statement file", 
 type=["pdf", "png", "jpg", "jpeg", "csv"])
