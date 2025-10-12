@@ -39,7 +39,7 @@ Your main GitHub credentials (in keychain) remain **untouched** and are not used
 rm ~/.git-credentials-ai
 
 # 2. Remove the Git configuration
-cd ~/ai-expense-tracker
+cd ~/projects/ai-expense-tracker
 git config --local --unset credential.helper
 
 # 3. Revoke token on GitHub
@@ -89,7 +89,7 @@ echo "https://sahiljain11593:NEW_TOKEN_HERE@github.com" > ~/.git-credentials-ai
 chmod 600 ~/.git-credentials-ai
 
 # 3. Test it works
-cd ~/ai-expense-tracker
+cd ~/projects/ai-expense-tracker
 git ls-remote origin
 
 # 4. Revoke old token on GitHub
@@ -143,7 +143,7 @@ If you need to troubleshoot:
 
 ```bash
 # Check if token is configured
-cd ~/ai-expense-tracker
+cd ~/projects/ai-expense-tracker
 git config --local --list | grep credential
 
 # Test token works
