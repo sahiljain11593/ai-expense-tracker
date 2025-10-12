@@ -67,6 +67,14 @@ api_keys.txt
 *.jpeg
 !test_transactions.csv
 
+# Database and exports (sensitive data)
+data/
+exports/
+backups/
+*.db
+*.sqlite
+*.sqlite3
+
 # Temporary files
 *.tmp
 *.temp

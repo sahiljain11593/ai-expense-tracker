@@ -393,4 +393,147 @@ def list_recurring_rules(db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
         conn.close()
 
 
+def get_dedupe_settings(db_path: str = DEFAULT_DB_PATH) -> Dict:
+    """Get dedupe configuration settings with defaults."""
+    defaults = {
+        'similarity_threshold': 0.85,  # 85% similarity for fuzzy matching
+        'check_date_range_days': 0,    # 0 = exact date only
+        'check_amount_tolerance': 0.0  # 0.0 = exact amount only
+    }
+    
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        settings = defaults.copy()
+        for key in defaults:
+            cur.execute('SELECT value FROM settings WHERE key = ?', (f'dedupe_{key}',))
+            row = cur.fetchone()
+            if row:
+                val = row[0]
+                # Convert to appropriate type
+                if key == 'check_date_range_days':
+                    settings[key] = int(val)
+                else:
+                    settings[key] = float(val)
+        return settings
+    finally:
+        conn.close()
+
+
+def save_dedupe_settings(similarity_threshold: float, date_range_days: int, amount_tolerance: float, db_path: str = DEFAULT_DB_PATH) -> None:
+    """Save dedupe configuration to settings."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ('dedupe_similarity_threshold', str(similarity_threshold))
+        )
+        cur.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ('dedupe_check_date_range_days', str(date_range_days))
+        )
+        cur.execute(
+            "INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            ('dedupe_check_amount_tolerance', str(amount_tolerance))
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+
+def find_potential_duplicates_fuzzy(date: str, description: str, amount: float, transaction_id: Optional[int] = None, db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
+    """
+    Find potential duplicates using configurable fuzzy matching.
+    
+    Args:
+        date: Transaction date (YYYY-MM-DD)
+        description: Transaction description
+        amount: Transaction amount
+        transaction_id: If provided, exclude this ID from results
+        db_path: Path to database
+    
+    Returns:
+        List of potential duplicate transaction dicts with similarity scores
+    """
+    from difflib import SequenceMatcher
+    from datetime import datetime as dt, timedelta
+    
+    settings = get_dedupe_settings(db_path)
+    threshold = settings['similarity_threshold']
+    date_range = settings['check_date_range_days']
+    amount_tol = settings['check_amount_tolerance']
+    
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        
+        # Build date range query
+        if date_range == 0:
+            date_query = "date = ?"
+            date_params = [date]
+        else:
+            # Calculate date range
+            try:
+                base_date = dt.strptime(date, '%Y-%m-%d')
+                start_date = (base_date - timedelta(days=date_range)).strftime('%Y-%m-%d')
+                end_date = (base_date + timedelta(days=date_range)).strftime('%Y-%m-%d')
+                date_query = "date BETWEEN ? AND ?"
+                date_params = [start_date, end_date]
+            except:
+                date_query = "date = ?"
+                date_params = [date]
+        
+        # Build amount range query
+        if amount_tol == 0.0:
+            amount_query = "amount = ?"
+            amount_params = [amount]
+        else:
+            lower = amount * (1 - amount_tol)
+            upper = amount * (1 + amount_tol)
+            amount_query = "amount BETWEEN ? AND ?"
+            amount_params = [lower, upper]
+        
+        # Build full query
+        query = f'''
+            SELECT id, date, description, amount, category, subcategory, transaction_type
+            FROM transactions
+            WHERE {date_query} AND {amount_query}
+        '''
+        
+        params = date_params + amount_params
+        if transaction_id:
+            query += " AND id != ?"
+            params.append(transaction_id)
+        
+        cur.execute(query, params)
+        rows = cur.fetchall()
+        
+        # Filter by description similarity
+        duplicates = []
+        desc_lower = (description or '').lower().strip()
+        
+        for row in rows:
+            candidate_desc = (row['description'] or '').lower().strip()
+            similarity = SequenceMatcher(None, desc_lower, candidate_desc).ratio()
+            
+            if similarity >= threshold:
+                duplicates.append({
+                    'id': row['id'],
+                    'date': row['date'],
+                    'description': row['description'],
+                    'amount': row['amount'],
+                    'category': row['category'],
+                    'subcategory': row['subcategory'],
+                    'transaction_type': row['transaction_type'],
+                    'similarity': round(similarity * 100, 1)  # As percentage
+                })
+        
+        # Sort by similarity descending
+        duplicates.sort(key=lambda x: x['similarity'], reverse=True)
+        return duplicates
+    finally:
+        conn.close()
+
+
 

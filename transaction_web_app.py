@@ -47,6 +47,9 @@ try:
         list_recurring_rules,
         get_setting,
         set_setting,
+        get_dedupe_settings,
+        save_dedupe_settings,
+        find_potential_duplicates_fuzzy,
     )
 except Exception as _e:
     # Allow the app to still render other parts; show a soft warning
@@ -1190,16 +1193,24 @@ def main() -> None:
     if not require_auth():
         return
 
-    st.title("Transaction Categoriser")
-    st.write(
-        "Upload a credit card statement in PDF, CSV, or image format. The app will extract transaction data, "
-        "assign categories based on keyword rules and let you review the results."
-    )
-
-    # Onboarding note
-    st.info(
-        "Getting started: 1) Upload CSV/PDF, 2) Review categories, 3) Save to DB, 4) Export/Backup as needed."
-    )
+    st.title("💰 AI Expense Tracker")
+    
+    # Concise onboarding
+    with st.expander("ℹ️ Quick Start Guide", expanded=False):
+        st.markdown("""
+        **Get started in 3 steps:**
+        1. **Upload** your bank statement (CSV/PDF/Image)
+        2. **Review** auto-categorized transactions (JPY default)
+        3. **Save** to database and export/backup as needed
+        
+        **Features:**
+        - 🌐 Japanese → English translation (AI-powered or free)
+        - 🔄 Multi-currency with auto-conversion to JPY
+        - 🎯 Smart categorization with learning
+        - 🔍 Duplicate detection (configurable)
+        - 🔁 Recurring transaction management
+        - ☁️ Google Drive backup (optional)
+        """)
 
     # Initialize database (first run safe)
     if init_db:
@@ -2129,7 +2140,89 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                     except Exception as e:
                         st.error(f"Generation failed: {e}")
 
+        # Dedupe Settings UI
+        st.divider()
+        st.subheader("⚙️ Duplicate Detection Settings")
+        st.caption("Configure how the system detects potential duplicate transactions.")
+        
+        if get_dedupe_settings and save_dedupe_settings:
+            with st.expander("🔧 Configure Duplicate Detection"):
+                current = get_dedupe_settings()
+                
+                col_d1, col_d2, col_d3 = st.columns([1, 1, 1])
+                with col_d1:
+                    similarity = st.slider(
+                        "Merchant Name Similarity (%)",
+                        min_value=50,
+                        max_value=100,
+                        value=int(current['similarity_threshold'] * 100),
+                        step=5,
+                        help="Higher = stricter matching. 85% means merchant names must be 85% similar to be considered duplicates."
+                    )
+                
+                with col_d2:
+                    date_range = st.number_input(
+                        "Date Range Tolerance (days)",
+                        min_value=0,
+                        max_value=7,
+                        value=current['check_date_range_days'],
+                        help="0 = exact date match only. 1-7 = check transactions within ±N days."
+                    )
+                
+                with col_d3:
+                    amount_tol = st.slider(
+                        "Amount Tolerance (%)",
+                        min_value=0.0,
+                        max_value=10.0,
+                        value=current['check_amount_tolerance'] * 100,
+                        step=0.5,
+                        format="%.1f",
+                        help="0 = exact amount only. 5 = ±5% amount variation allowed."
+                    )
+                
+                if st.button("💾 Save Dedupe Settings"):
+                    try:
+                        save_dedupe_settings(
+                            similarity_threshold=similarity / 100.0,
+                            date_range_days=int(date_range),
+                            amount_tolerance=amount_tol / 100.0
+                        )
+                        st.success("✅ Dedupe settings saved!")
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Failed to save settings: {e}")
+                
+                # Show current settings summary
+                st.caption(f"**Current:** Similarity ≥{int(current['similarity_threshold']*100)}%, Date ±{current['check_date_range_days']} days, Amount ±{current['check_amount_tolerance']*100:.1f}%")
+            
+            # Fuzzy duplicate checker tool
+            with st.expander("🔍 Find Potential Duplicates"):
+                st.write("Check for potential duplicates of a specific transaction:")
+                check_date = st.date_input("Transaction Date", value=pd.Timestamp.today())
+                check_desc = st.text_input("Description")
+                check_amount = st.number_input("Amount", value=0.0, format="%.2f")
+                
+                if st.button("🔎 Find Duplicates") and find_potential_duplicates_fuzzy:
+                    if check_desc and check_amount != 0:
+                        try:
+                            dupes = find_potential_duplicates_fuzzy(
+                                date=check_date.strftime("%Y-%m-%d"),
+                                description=check_desc,
+                                amount=float(check_amount)
+                            )
+                            if dupes:
+                                st.warning(f"Found {len(dupes)} potential duplicate(s):")
+                                df_dupes = pd.DataFrame(dupes)
+                                st.dataframe(df_dupes, use_container_width=True)
+                            else:
+                                st.success("✅ No duplicates found with current settings.")
+                        except Exception as e:
+                            st.error(f"Duplicate check failed: {e}")
+                    else:
+                        st.warning("Please enter a description and non-zero amount.")
+
         # Google Drive backup UI
+        st.divider()
         st.subheader("☁️ Google Drive Backup")
         st.caption("Authorize once, then upload latest DB backup and CSV export to Drive.")
         try:
@@ -2209,6 +2302,57 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             with col3:
                 st.metric("📊 Average Balance", f"¥{balance_df['running_balance'].mean():,.0f}")
         
+        # Add quick filters for transactions
+        st.divider()
+        st.subheader("🔍 Filter Transactions")
+        filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 1, 1, 1])
+        
+        with filter_col1:
+            filter_categories = st.multiselect(
+                "Categories",
+                options=sorted(display_df['category'].unique()) if 'category' in display_df.columns else [],
+                default=None,
+                help="Select categories to filter (empty = show all)"
+            )
+        
+        with filter_col2:
+            filter_type = st.multiselect(
+                "Type",
+                options=display_df['transaction_type'].unique() if 'transaction_type' in display_df.columns else [],
+                default=None,
+                help="Filter by transaction type"
+            )
+        
+        with filter_col3:
+            filter_currency = st.multiselect(
+                "Currency",
+                options=sorted(display_df['currency'].unique()) if 'currency' in display_df.columns else [],
+                default=None,
+                help="Filter by currency"
+            )
+        
+        with filter_col4:
+            filter_search = st.text_input(
+                "Search Description",
+                placeholder="Search...",
+                help="Search in transaction descriptions"
+            )
+        
+        # Apply filters
+        filtered_df = display_df.copy()
+        if filter_categories:
+            filtered_df = filtered_df[filtered_df['category'].isin(filter_categories)]
+        if filter_type:
+            filtered_df = filtered_df[filtered_df['transaction_type'].isin(filter_type)]
+        if filter_currency:
+            filtered_df = filtered_df[filtered_df['currency'].isin(filter_currency)]
+        if filter_search:
+            filtered_df = filtered_df[
+                filtered_df['description'].str.contains(filter_search, case=False, na=False)
+            ]
+        
+        st.caption(f"Showing {len(filtered_df)} of {len(display_df)} transactions")
+        
         # Use data editor for final review
         final_desc_width = st.select_slider(
             "Description column width (final table)",
@@ -2216,7 +2360,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             value="large"
         )
         edited_df = st.data_editor(
-            display_df,
+            filtered_df,
             num_rows="dynamic",
             use_container_width=True,
             column_config={
