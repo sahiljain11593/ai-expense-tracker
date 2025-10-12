@@ -1304,6 +1304,16 @@ def main() -> None:
     
     # View Saved Transactions Section
     st.divider()
+    
+    # Check if there are any transactions to show a notification
+    try:
+        if load_all_transactions is not None:
+            saved_count = len(load_all_transactions() or [])
+            if saved_count > 0:
+                st.info(f"📊 **{saved_count} transactions saved** - Expand 'View Saved Transactions' below to analyze your data!")
+    except Exception:
+        pass
+    
     with st.expander("📊 View Saved Transactions", expanded=False):
         if load_all_transactions is not None:
             try:
@@ -2129,9 +2139,19 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             for col in ["date", "description", "original_description", "amount", "currency", "fx_rate", "amount_jpy", "category", "subcategory", "transaction_type"]
         ) and insert_transactions is not None
 
+        # Save section with clear instructions
+        st.subheader("💾 Save Transactions")
+        st.info("**Important:** After categorizing, you MUST click 'Save to Database' below to permanently save your transactions. Use 'Save Progress' above only for temporary backup.")
+        
         col_save1, col_save2 = st.columns([1, 1])
         with col_save1:
-            if st.button("💾 Save processed transactions to DB") and can_save:
+            save_button_text = "💾 Save processed transactions to DB"
+            if can_save:
+                save_button_text += " ✅"
+            else:
+                save_button_text += " ❌ (Data not ready)"
+            
+            if st.button(save_button_text, type="primary" if can_save else "secondary") and can_save:
                 try:
                     batch_id = create_import_record(uploaded_file.name if hasattr(uploaded_file, "name") else "upload", len(df_cat)) if create_import_record else None
                     # Potential duplicate review
@@ -2185,7 +2205,14 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                         review_rows = filtered_rows
 
                     inserted, dupes, _ = insert_transactions(review_rows, batch_id)  # type: ignore
-                    st.success(f"Inserted {inserted} rows. Skipped {dupes} strict duplicates.")
+                    
+                    # Show prominent success message
+                    if inserted > 0:
+                        st.success(f"🎉 **SUCCESS!** Inserted {inserted} transactions to database. Skipped {dupes} duplicates.")
+                        st.balloons()  # Celebration animation
+                        st.info("💡 **Next step:** Scroll to the top and expand '📊 View Saved Transactions' to see your data!")
+                    else:
+                        st.warning(f"No new transactions inserted. Skipped {dupes} duplicates.")
                 except Exception as e:
                     st.error(f"Save failed: {e}")
             elif not can_save:
