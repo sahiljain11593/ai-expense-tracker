@@ -47,6 +47,9 @@ try:
         list_recurring_rules,
         get_setting,
         set_setting,
+        get_dedupe_settings,
+        set_dedupe_settings,
+        find_potential_duplicates,
     )
 except Exception as _e:
     # Allow the app to still render other parts; show a soft warning
@@ -1190,16 +1193,61 @@ def main() -> None:
     if not require_auth():
         return
 
-    st.title("Transaction Categoriser")
-    st.write(
-        "Upload a credit card statement in PDF, CSV, or image format. The app will extract transaction data, "
-        "assign categories based on keyword rules and let you review the results."
-    )
+    st.title("🤖 AI-Powered Expense Tracker")
+    st.markdown("""
+    **Transform your financial data into insights!** Upload bank statements, credit card PDFs, or CSV files. 
+    Our AI will automatically translate Japanese text, categorize transactions, and help you track your spending.
+    """)
+    
+    # Quick stats if data exists
+    if load_all_transactions:
+        try:
+            all_tx = load_all_transactions()
+            if all_tx:
+                df_all = pd.DataFrame(all_tx)
+                total_tx = len(df_all)
+                total_amount = df_all['amount_jpy'].sum()
+                recent_tx = len(df_all[pd.to_datetime(df_all['date']) >= pd.Timestamp.now() - pd.Timedelta(days=30)])
+                
+                col1, col2, col3, col4 = st.columns(4)
+                with col1:
+                    st.metric("📊 Total Transactions", f"{total_tx:,}")
+                with col2:
+                    st.metric("💰 Total Amount", f"¥{total_amount:,.0f}")
+                with col3:
+                    st.metric("📅 Last 30 Days", f"{recent_tx:,}")
+                with col4:
+                    categorized = len(df_all[df_all['category'].notna() & (df_all['category'] != 'Uncategorised')])
+                    st.metric("🏷️ Categorized", f"{categorized}/{total_tx}")
+        except:
+            pass
 
-    # Onboarding note
-    st.info(
-        "Getting started: 1) Upload CSV/PDF, 2) Review categories, 3) Save to DB, 4) Export/Backup as needed."
-    )
+    # Onboarding steps
+    with st.expander("🚀 Quick Start Guide", expanded=True):
+        st.markdown("""
+        **Step 1: Upload** 📤  
+        Choose your file type:
+        - **CSV**: Bank statements, credit card exports
+        - **PDF**: Credit card statements, bank PDFs  
+        - **Image**: Screenshots of transactions
+        
+        **Step 2: Review** 👀  
+        - AI translates Japanese text automatically
+        - Smart categorization with confidence scores
+        - Edit categories as needed
+        
+        **Step 3: Save** 💾  
+        - Store in local SQLite database
+        - Export to CSV anytime
+        - Backup to Google Drive (optional)
+        
+        **Step 4: Analyze** 📈  
+        - View spending patterns
+        - Monthly summaries
+        - Recurring transaction detection
+        """)
+    
+    st.divider()
 
     # Initialize database (first run safe)
     if init_db:
@@ -1265,6 +1313,61 @@ def main() -> None:
     else:
         translation_mode = "Free Fallback"
         st.sidebar.success("ℹ️ Using free translation (enter API key for AI accuracy)")
+    
+    # Dedupe Settings
+    st.sidebar.header("🔍 Duplicate Detection Settings")
+    if get_dedupe_settings and set_dedupe_settings:
+        try:
+            current_settings = get_dedupe_settings()
+            
+            with st.sidebar.expander("⚙️ Configure Duplicate Detection", expanded=False):
+                st.write("Adjust how similar transactions are detected as potential duplicates.")
+                
+                merchant_threshold = st.slider(
+                    "Merchant Similarity Threshold",
+                    min_value=0.5,
+                    max_value=1.0,
+                    value=current_settings["merchant_similarity_threshold"],
+                    step=0.05,
+                    help="How similar merchant names need to be (0.5 = 50% similar, 1.0 = identical)"
+                )
+                
+                amount_tolerance = st.slider(
+                    "Amount Tolerance (%)",
+                    min_value=0.1,
+                    max_value=10.0,
+                    value=current_settings["amount_tolerance_percent"],
+                    step=0.1,
+                    help="How much amounts can differ and still be considered similar"
+                )
+                
+                date_tolerance = st.slider(
+                    "Date Tolerance (days)",
+                    min_value=0,
+                    max_value=7,
+                    value=current_settings["date_tolerance_days"],
+                    step=1,
+                    help="How many days apart transactions can be and still be considered similar"
+                )
+                
+                if st.button("💾 Save Settings", key="save_dedupe_settings"):
+                    new_settings = {
+                        "merchant_similarity_threshold": merchant_threshold,
+                        "amount_tolerance_percent": amount_tolerance,
+                        "date_tolerance_days": date_tolerance,
+                    }
+                    set_dedupe_settings(new_settings)
+                    st.success("✅ Settings saved!")
+                    st.rerun()
+                
+                st.write("**Current Settings:**")
+                st.write(f"• Merchant similarity: {merchant_threshold:.1%}")
+                st.write(f"• Amount tolerance: ±{amount_tolerance:.1f}%")
+                st.write(f"• Date tolerance: ±{date_tolerance} days")
+        except Exception as e:
+            st.sidebar.warning(f"Dedupe settings error: {e}")
+    else:
+        st.sidebar.warning("Dedupe settings unavailable")
     
     # Smart Learning Dashboard
     if learning_system:
@@ -1802,19 +1905,106 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                 elif skip_categorization:
                     st.info("⏭️ Skipping categorization. Scroll down to review results.")
         
-        # Category filter & review
-        st.subheader("🔎 Category Filter & Review")
+        # Advanced filtering section
+        st.subheader("🔍 Filter & Search Transactions")
+        
+        col1, col2, col3 = st.columns(3)
+        
+        with col1:
+            # Date range filter
+            if 'date' in df_cat.columns:
+                df_cat['date'] = pd.to_datetime(df_cat['date'])
+                min_date = df_cat['date'].min().date()
+                max_date = df_cat['date'].max().date()
+                date_range = st.date_input(
+                    "📅 Date Range",
+                    value=(min_date, max_date),
+                    min_value=min_date,
+                    max_value=max_date
+                )
+            else:
+                date_range = None
+        
+        with col2:
+            # Amount range filter
+            if 'amount' in df_cat.columns:
+                min_amount = float(df_cat['amount'].min())
+                max_amount = float(df_cat['amount'].max())
+                amount_range = st.slider(
+                    "💰 Amount Range (¥)",
+                    min_value=min_amount,
+                    max_value=max_amount,
+                    value=(min_amount, max_amount),
+                    step=100.0
+                )
+            else:
+                amount_range = None
+        
+        with col3:
+            # Transaction type filter
+            if 'transaction_type' in df_cat.columns:
+                available_types = df_cat['transaction_type'].dropna().unique().tolist()
+                selected_types = st.multiselect(
+                    "💳 Transaction Type",
+                    options=available_types,
+                    default=available_types
+                )
+            else:
+                selected_types = None
+        
+        # Text search filter
+        search_term = st.text_input(
+            "🔍 Search in descriptions",
+            placeholder="Enter keywords to search in transaction descriptions...",
+            help="Search in both English and Japanese descriptions"
+        )
+        
+        # Category filter
         try:
             available_categories = sorted([c for c in df_cat['category'].dropna().unique().tolist()])
         except Exception:
             available_categories = []
         selected_categories = st.multiselect(
-            "Filter by category",
+            "🏷️ Filter by Category",
             options=available_categories,
-            default=available_categories
+            default=available_categories,
+            help="Select categories to display"
         )
 
-        filtered_df = df_cat[df_cat['category'].isin(selected_categories)].copy() if selected_categories else df_cat.copy()
+        # Apply all filters
+        filtered_df = df_cat.copy()
+        
+        # Date filter
+        if date_range and len(date_range) == 2:
+            start_date, end_date = date_range
+            filtered_df = filtered_df[
+                (filtered_df['date'].dt.date >= start_date) & 
+                (filtered_df['date'].dt.date <= end_date)
+            ]
+        
+        # Amount filter
+        if amount_range:
+            min_amt, max_amt = amount_range
+            filtered_df = filtered_df[
+                (filtered_df['amount'] >= min_amt) & 
+                (filtered_df['amount'] <= max_amt)
+            ]
+        
+        # Transaction type filter
+        if selected_types:
+            filtered_df = filtered_df[filtered_df['transaction_type'].isin(selected_types)]
+        
+        # Text search filter
+        if search_term:
+            search_mask = (
+                filtered_df['description'].str.contains(search_term, case=False, na=False) |
+                filtered_df['original_description'].str.contains(search_term, case=False, na=False)
+            )
+            filtered_df = filtered_df[search_mask]
+        
+        # Category filter
+        if selected_categories:
+            filtered_df = filtered_df[filtered_df['category'].isin(selected_categories)]
 
         # Attach row id for safe updates
         filtered_df['_row_id'] = filtered_df.index
@@ -1933,7 +2123,7 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
             if st.button("💾 Save processed transactions to DB") and can_save:
                 try:
                     batch_id = create_import_record(uploaded_file.name if hasattr(uploaded_file, "name") else "upload", len(df_cat)) if create_import_record else None
-                    # Potential duplicate review
+                    # Prepare transactions for database insertion
                     review_rows = []
                     for _, r in df_cat.iterrows():
                         review_rows.append({
@@ -1948,39 +2138,65 @@ type=["pdf", "png", "jpg", "jpeg", "csv"])
                             "subcategory": r.get("subcategory"),
                             "transaction_type": r.get("transaction_type"),
                         })
-                    # Lightweight potential duplicate detection: same date & amount
+                    
+                    # Advanced duplicate detection using fuzzy matching
                     pot_dupes = []
-                    try:
-                        existing = pd.DataFrame(load_all_transactions() or []) if load_all_transactions else pd.DataFrame()
-                        if not existing.empty:
-                            existing['date'] = pd.to_datetime(existing['date']).dt.strftime('%Y-%m-%d')
-                            for row in review_rows:
-                                date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
-                                match = existing[(existing['date'] == date_str) & (existing['amount'].round(2) == round(row['amount'], 2))]
-                                if len(match) > 0:
-                                    pot_dupes.append({
-                                        "date": date_str,
-                                        "amount": row['amount'],
-                                        "new_description": row['description'],
-                                        "existing_count": int(len(match))
-                                    })
-                    except Exception:
-                        pass
+                    if find_potential_duplicates:
+                        try:
+                            pot_dupes = find_potential_duplicates(review_rows)
+                        except Exception as e:
+                            st.warning(f"Advanced duplicate detection failed: {e}")
+                            # Fallback to simple detection
+                            pot_dupes = []
 
                     if pot_dupes:
-                        st.warning("Potential duplicates detected. Review below; choose whether to insert them.")
-                        st.dataframe(pd.DataFrame(pot_dupes))
-                        insert_suspected = st.checkbox("Insert suspected duplicates too", value=False)
+                        st.warning(f"🔍 **{len(pot_dupes)} potential duplicates detected** using fuzzy matching")
+                        
+                        # Create a more detailed display of potential duplicates
+                        dup_display = []
+                        for i, dup in enumerate(pot_dupes):
+                            dup_display.append({
+                                "New Transaction": f"{dup['new_transaction']['date']} | {dup['new_transaction']['description'][:30]}... | ¥{dup['new_transaction']['amount']:,.0f}",
+                                "Existing Transaction": f"{dup['existing_transaction']['date']} | {dup['existing_transaction']['description'][:30]}... | ¥{dup['existing_transaction']['amount']:,.0f}",
+                                "Similarity": f"{dup['similarity_score']:.1%}",
+                                "Date Diff": f"{dup['date_diff_days']} days",
+                                "Amount Diff": f"¥{dup['amount_diff']:,.0f} ({dup['amount_diff_percent']:.1f}%)"
+                            })
+                        
+                        st.dataframe(pd.DataFrame(dup_display), use_container_width=True)
+                        
+                        col_dup1, col_dup2 = st.columns([1, 1])
+                        with col_dup1:
+                            insert_suspected = st.checkbox("✅ Insert suspected duplicates", value=False, help="Check this to include potential duplicates in the database")
+                        with col_dup2:
+                            if st.button("🔍 Show Details", key="show_dup_details"):
+                                st.session_state['show_dup_details'] = not st.session_state.get('show_dup_details', False)
+                        
+                        if st.session_state.get('show_dup_details', False):
+                            st.write("**Detailed Comparison:**")
+                            for i, dup in enumerate(pot_dupes):
+                                with st.expander(f"Duplicate #{i+1} - Similarity: {dup['similarity_score']:.1%}"):
+                                    col1, col2 = st.columns(2)
+                                    with col1:
+                                        st.write("**New Transaction:**")
+                                        st.write(f"Date: {dup['new_transaction']['date']}")
+                                        st.write(f"Description: {dup['new_transaction']['description']}")
+                                        st.write(f"Amount: ¥{dup['new_transaction']['amount']:,.0f}")
+                                    with col2:
+                                        st.write("**Existing Transaction:**")
+                                        st.write(f"Date: {dup['existing_transaction']['date']}")
+                                        st.write(f"Description: {dup['existing_transaction']['description']}")
+                                        st.write(f"Amount: ¥{dup['existing_transaction']['amount']:,.0f}")
                     else:
+                        st.success("✅ No potential duplicates detected")
                         insert_suspected = True
 
-                    if not insert_suspected and 'existing' in locals() and not existing.empty:
-                        filtered_rows = []
-                        for row in review_rows:
-                            date_str = row['date'].strftime('%Y-%m-%d') if hasattr(row['date'], 'strftime') else str(row['date'])
-                            match = existing[(existing['date'] == date_str) & (existing['amount'].round(2) == round(row['amount'], 2))]
-                            if len(match) == 0:
-                                filtered_rows.append(row)
+                    # Filter out suspected duplicates if user chose not to insert them
+                    if not insert_suspected and pot_dupes:
+                        suspected_new_txs = {dup['new_transaction']['description'] + str(dup['new_transaction']['amount']) for dup in pot_dupes}
+                        filtered_rows = [row for row in review_rows 
+                                      if row['description'] + str(row['amount']) not in suspected_new_txs]
+                        st.info(f"Filtered out {len(review_rows) - len(filtered_rows)} suspected duplicates")
                         review_rows = filtered_rows
 
                     inserted, dupes, _ = insert_transactions(review_rows, batch_id)  # type: ignore
