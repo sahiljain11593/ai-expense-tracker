@@ -5,9 +5,13 @@ A smart expense tracking application that automatically categorizes transactions
 ## ✨ Features
 
 - **📄 Multi-format Support**: PDF, CSV, and image files
-- **🌐 AI Translation**: Japanese → English using OpenAI GPT-4
+- **🌐 AI Translation**: Japanese → English using OpenAI GPT-3.5 (with free fallback)
 - **🧠 Smart Categorization**: 10+ expense categories with intelligent keyword matching
-- **📊 Data Visualization**: Monthly spending reports and charts
+- **🔍 Advanced Duplicate Detection**: Configurable fuzzy matching for similar transactions
+- **📊 Data Visualization**: Monthly spending reports and interactive charts
+- **🔄 Recurring Transactions**: Automatic detection and generation of recurring payments
+- **☁️ Cloud Backup**: Google Drive integration for data persistence
+- **🔐 Secure**: Google Sign-In authentication with single-user access control
 - **🔧 Easy Setup**: Simple configuration for ChatGPT Premium users
 
 ## 🚀 Quick Start
@@ -93,13 +97,67 @@ export OPENAI_API_KEY="your-api-key-here"
 
 ## 📊 Usage
 
-1. **Upload File**: Choose your bank statement file
-2. **Review Data**: Check extracted transactions
-3. **Edit Categories**: Manually adjust if needed
-4. **View Reports**: See monthly spending summaries
-5. **Export Data**: Use Export/Backup buttons in the app (CSV and DB backup)
-6. **Google Drive Backup**: Use "Backup to Drive" (authorize first) for cloud backups
-7. **Recurring**: Create rules (weekly/monthly) and generate next instances
+1. **Upload File**: Choose your bank statement file (CSV, PDF, or image)
+2. **Review Data**: Check extracted transactions with AI translation
+3. **Configure Duplicates**: Adjust duplicate detection sensitivity in sidebar
+4. **Edit Categories**: Manually adjust categories with confidence scores
+5. **Filter & Search**: Use advanced filters to find specific transactions
+6. **Save to Database**: Store processed transactions locally
+7. **View Reports**: See monthly spending summaries and charts
+8. **Export Data**: Download CSV exports anytime
+9. **Cloud Backup**: Backup to Google Drive for data persistence
+10. **Recurring Rules**: Create and manage recurring transaction patterns
+
+## 💾 Data Management & Backup
+
+### Local Storage
+- **SQLite Database**: All data stored in `data/expenses.db`
+- **Automatic Backups**: Local backups created in `backups/` folder
+- **CSV Exports**: Downloadable exports in `exports/` folder
+- **Sanitization**: Option to remove PII from exports
+
+### Google Drive Backup (Recommended for Streamlit Cloud)
+
+#### Setup Google Drive Integration
+1. **Create Google Cloud Project**:
+   - Go to [Google Cloud Console](https://console.cloud.google.com/)
+   - Create a new project or select existing
+   - Enable Google Drive API
+
+2. **Create OAuth Credentials**:
+   - Go to "Credentials" → "Create Credentials" → "OAuth 2.0 Client IDs"
+   - Application type: "Web application"
+   - Add authorized redirect URI: `https://your-app-name.streamlit.app`
+   - Download the JSON file and note `client_id` and `client_secret`
+
+3. **Configure Streamlit Secrets**:
+   ```toml
+   [google]
+   client_id = "your-client-id.apps.googleusercontent.com"
+   client_secret = "your-client-secret"
+   redirect_uri = "https://your-app-name.streamlit.app"
+   drive_folder_id = "optional-folder-id"  # Leave empty to auto-create
+   ```
+
+#### Using Google Drive Backup
+1. **Authorize**: Click "Authorize Google Drive" in the app
+2. **Paste Code**: Copy the authorization code from the popup
+3. **Backup**: Use "Backup DB to Drive" and "Export CSV to Drive" buttons
+4. **Restore**: Download files from Drive and import back to the app
+
+### Monthly Backup Strategy (Streamlit Cloud)
+Since Streamlit Cloud sessions are ephemeral, follow this monthly routine:
+
+1. **Week 1**: Upload new transactions, process, and backup to Drive
+2. **Week 2**: Continue adding transactions, backup weekly
+3. **Week 3**: Review and categorize, backup before major changes
+4. **Week 4**: Full backup of database and CSV export to Drive
+
+### Data Recovery
+If you lose access to your Streamlit Cloud app:
+1. Download the latest backup from Google Drive
+2. Restore the SQLite database to a local installation
+3. Continue using the app locally or redeploy
 
 ## 🛠️ Development
 
@@ -127,26 +185,61 @@ streamlit run transaction_web_app.py
 
 ### Streamlit Cloud Deployment
 
-1. Deploy this repo on Streamlit Cloud (link your GitHub repo)
-2. Set Secrets (Settings → Secrets):
-```
-[firebase]
-apiKey = "YOUR_WEB_API_KEY"
-authDomain = "your-project.firebaseapp.com"
-projectId = "your-project"
-appId = "YOUR_APP_ID"
+#### Step 1: Deploy to Streamlit Cloud
+1. **Fork this repository** to your GitHub account
+2. **Go to [Streamlit Cloud](https://share.streamlit.io/)**
+3. **Click "New app"** and connect your GitHub repository
+4. **Set the main file path** to `transaction_web_app.py`
+5. **Deploy** the application
 
-[auth]
-allowed_email = "your@gmail.com"
+#### Step 2: Configure Authentication (Optional)
+If you want to restrict access to your app:
 
-[google]
-client_id = "YOUR_OAUTH_CLIENT_ID"
-client_secret = "YOUR_OAUTH_CLIENT_SECRET"
-redirect_uri = "https://<your-streamlit-app-url>"
-drive_folder_id = "optional-folder-id"
-```
-3. Reboot the app. You will see a Google Sign-In button; only the allowed email can proceed.
-4. For Google Drive backup, authorize using the provided link and paste the `code` back to the app.
+1. **Set up Firebase Authentication**:
+   - Go to [Firebase Console](https://console.firebase.google.com/)
+   - Create a new project or select existing
+   - Enable Authentication → Sign-in method → Google
+   - Get your Firebase config
+
+2. **Set up Google OAuth for Drive backup**:
+   - Follow the Google Drive setup steps above
+   - Get your OAuth client credentials
+
+3. **Configure Streamlit Secrets**:
+   - Go to your app's settings in Streamlit Cloud
+   - Click "Secrets" and add:
+   ```toml
+   [firebase]
+   apiKey = "your-firebase-api-key"
+   authDomain = "your-project.firebaseapp.com"
+   projectId = "your-project-id"
+   appId = "your-firebase-app-id"
+
+   [auth]
+   allowed_email = "your-email@gmail.com"
+
+   [google]
+   client_id = "your-oauth-client-id"
+   client_secret = "your-oauth-client-secret"
+   redirect_uri = "https://your-app-name.streamlit.app"
+   drive_folder_id = "optional-folder-id"
+   ```
+
+4. **Reboot the app** to apply secrets
+
+#### Step 3: First-Time Setup
+1. **Access your app** - you'll see a Google Sign-In button if auth is configured
+2. **Sign in** with your allowed email address
+3. **Authorize Google Drive** (if configured) for backup functionality
+4. **Start uploading** your transaction files!
+
+#### Step 4: Regular Usage
+- **Upload transactions** weekly or monthly
+- **Backup to Drive** after each major upload
+- **Export CSV** for external analysis
+- **Review and categorize** transactions as needed
+
+## 🧪 Testing
 
 ### Local E2E Smoke Test (no auth)
 ```bash
@@ -156,6 +249,28 @@ curl -sS https://bootstrap.pypa.io/get-pip.py -o get-pip.py
 pip install -r requirements.txt
 python scripts/e2e_check.py
 ```
+
+### Unit Tests
+```bash
+# Install pytest
+pip install pytest
+
+# Run all tests
+python -m pytest test_expense_tracker.py -v
+
+# Run specific test categories
+python -m pytest test_expense_tracker.py::TestDataStore -v
+python -m pytest test_expense_tracker.py::TestDedupeLogic -v
+```
+
+### Test Coverage
+The test suite covers:
+- ✅ Database operations (insert, load, dedupe)
+- ✅ Settings persistence
+- ✅ Fuzzy duplicate detection
+- ✅ Recurring rule management
+- ✅ Merchant similarity algorithms
+- ✅ Amount tolerance calculations
 
 ## 🤝 Contributing
 

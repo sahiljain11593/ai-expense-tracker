@@ -332,6 +332,94 @@ def set_setting(key: str, value: str, db_path: str = DEFAULT_DB_PATH) -> None:
         conn.close()
 
 
+# Dedupe configuration functions
+def get_dedupe_settings(db_path: str = DEFAULT_DB_PATH) -> Dict[str, float]:
+    """Get dedupe configuration settings with defaults."""
+    return {
+        "merchant_similarity_threshold": float(get_setting("dedupe_merchant_similarity_threshold", db_path) or "0.8"),
+        "amount_tolerance_percent": float(get_setting("dedupe_amount_tolerance_percent", db_path) or "1.0"),
+        "date_tolerance_days": int(get_setting("dedupe_date_tolerance_days", db_path) or "1"),
+    }
+
+
+def set_dedupe_settings(settings: Dict[str, float], db_path: str = DEFAULT_DB_PATH) -> None:
+    """Set dedupe configuration settings."""
+    for key, value in settings.items():
+        set_setting(f"dedupe_{key}", str(value), db_path)
+
+
+def find_potential_duplicates(
+    new_transactions: List[Dict], 
+    db_path: str = DEFAULT_DB_PATH
+) -> List[Dict]:
+    """Find potential duplicates using fuzzy matching based on configured settings.
+    
+    Returns list of potential duplicate matches with similarity scores.
+    """
+    from difflib import SequenceMatcher
+    from datetime import datetime, timedelta
+    
+    settings = get_dedupe_settings(db_path)
+    merchant_threshold = settings["merchant_similarity_threshold"]
+    amount_tolerance = settings["amount_tolerance_percent"] / 100.0
+    date_tolerance = timedelta(days=settings["date_tolerance_days"])
+    
+    # Load existing transactions
+    existing = load_all_transactions(db_path)
+    if not existing:
+        return []
+    
+    potential_dupes = []
+    
+    for new_tx in new_transactions:
+        new_date = new_tx.get("date")
+        new_desc = (new_tx.get("description") or "").strip().lower()
+        new_amount = float(new_tx.get("amount", 0))
+        
+        # Convert new_date to datetime if it's a string
+        if isinstance(new_date, str):
+            new_date = datetime.strptime(new_date, "%Y-%m-%d").date()
+        elif hasattr(new_date, 'date'):
+            new_date = new_date.date()
+        
+        for existing_tx in existing:
+            existing_date = existing_tx.get("date")
+            existing_desc = (existing_tx.get("description") or "").strip().lower()
+            existing_amount = float(existing_tx.get("amount", 0))
+            
+            # Convert existing_date to datetime if it's a string
+            if isinstance(existing_date, str):
+                existing_date = datetime.strptime(existing_date, "%Y-%m-%d").date()
+            elif hasattr(existing_date, 'date'):
+                existing_date = existing_date.date()
+            
+            # Check date tolerance
+            date_diff = abs((new_date - existing_date).days)
+            if date_diff > settings["date_tolerance_days"]:
+                continue
+            
+            # Check amount tolerance
+            amount_diff = abs(new_amount - existing_amount)
+            if new_amount != 0 and amount_diff / abs(new_amount) > amount_tolerance:
+                continue
+            
+            # Check merchant similarity
+            similarity = SequenceMatcher(None, new_desc, existing_desc).ratio()
+            if similarity >= merchant_threshold:
+                potential_dupes.append({
+                    "new_transaction": new_tx,
+                    "existing_transaction": existing_tx,
+                    "similarity_score": similarity,
+                    "date_diff_days": date_diff,
+                    "amount_diff": amount_diff,
+                    "amount_diff_percent": (amount_diff / abs(new_amount) * 100) if new_amount != 0 else 0
+                })
+    
+    # Sort by similarity score (highest first)
+    potential_dupes.sort(key=lambda x: x["similarity_score"], reverse=True)
+    return potential_dupes
+
+
 def upsert_recurring_rule(rule: Dict, db_path: str = DEFAULT_DB_PATH) -> int:
     """Insert or update a recurring rule. Returns rule id.
     Recognized keys: id (optional), merchant_pattern, frequency, next_date,

@@ -27,13 +27,13 @@ def main():
         return 1
 
     df = pd.read_csv(sample_path)
-    # Simulate extraction selection by guessing columns: reuse transaction_web_app heuristics would require UI; assume standard columns exist
-    # Rename typical headers if present
-    cols = {c.lower(): c for c in df.columns}
-    # Ensure we have date, description, amount columns by selecting first 3 columns
-    date_col = list(df.columns)[0]
-    desc_col = list(df.columns)[1]
-    amount_col = list(df.columns)[2]
+    # Handle Japanese CSV format - map known columns
+    # Expected columns: "利用日","利用店名・商品名","利用者","支払方法","利用金額","支払手数料","支払総額","9月支払金額","10月繰越残高","新規サイン"
+    # Map to: date, description, amount
+    date_col = "利用日"  # Usage date
+    desc_col = "利用店名・商品名"  # Store name/product name
+    amount_col = "利用金額"  # Usage amount
+    
     df2 = pd.DataFrame({
         "date": pd.to_datetime(df[date_col], errors="coerce").dt.date,
         "description": df[desc_col].astype(str),
