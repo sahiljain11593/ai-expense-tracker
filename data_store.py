@@ -1416,7 +1416,8 @@ def get_learning_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict:
         total_patterns = cur.fetchone()[0]
         
         # Recent learning activity (last 30 days)
-        thirty_days_ago = (datetime.now() - pd.Timedelta(days=30)).isoformat()
+        from datetime import timedelta
+        thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()
         cur.execute("SELECT COUNT(*) FROM merchant_learning WHERE last_updated > ?", (thirty_days_ago,))
         recent_learning = cur.fetchone()[0]
         
