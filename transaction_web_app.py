@@ -1231,6 +1231,9 @@ def load_custom_rules(filename: str = "custom_rules.json"):
 
 
 def main() -> None:
+    # Initialize database (ensure all tables exist)
+    init_db()
+    
     # Require authentication (single-user gate if configured)
     if not require_auth():
         return

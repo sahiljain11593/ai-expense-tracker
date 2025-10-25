@@ -125,10 +125,103 @@ def get_connection(db_path: str = DEFAULT_DB_PATH) -> sqlite3.Connection:
     return conn
 
 
+def _create_missing_tables(cur: sqlite3.Cursor) -> None:
+    """Create missing tables safely (migration-friendly)"""
+    # categorization sessions
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS categorization_sessions (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          file_name TEXT NOT NULL,
+          started_at TEXT NOT NULL,
+          last_updated TEXT NOT NULL,
+          total_transactions INTEGER NOT NULL,
+          reviewed_transactions INTEGER NOT NULL DEFAULT 0,
+          status TEXT NOT NULL DEFAULT 'in_progress',
+          session_data TEXT
+        )
+        """
+    )
+
+    # categorization progress
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS categorization_progress (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          session_id INTEGER NOT NULL,
+          transaction_hash TEXT NOT NULL,
+          date TEXT NOT NULL,
+          description TEXT NOT NULL,
+          amount REAL NOT NULL,
+          category TEXT,
+          subcategory TEXT,
+          transaction_type TEXT,
+          reviewed_at TEXT,
+          confidence_score REAL DEFAULT 0.0,
+          FOREIGN KEY (session_id) REFERENCES categorization_sessions(id),
+          UNIQUE(session_id, transaction_hash)
+        )
+        """
+    )
+
+    # merchant learning
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS merchant_learning (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          merchant TEXT NOT NULL,
+          category TEXT NOT NULL,
+          subcategory TEXT,
+          frequency INTEGER NOT NULL DEFAULT 1,
+          confidence_score REAL DEFAULT 0.5,
+          last_updated TEXT NOT NULL,
+          UNIQUE(merchant, category, subcategory)
+        )
+        """
+    )
+
+    # learning patterns
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS learning_patterns (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          pattern_type TEXT NOT NULL,
+          pattern_value TEXT NOT NULL,
+          category TEXT NOT NULL,
+          subcategory TEXT,
+          frequency INTEGER NOT NULL DEFAULT 1,
+          confidence_score REAL DEFAULT 0.5,
+          last_updated TEXT NOT NULL,
+          UNIQUE(pattern_type, pattern_value, category, subcategory)
+        )
+        """
+    )
+
+    # merchant context learning
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS merchant_context_learning (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          merchant TEXT NOT NULL,
+          context_key TEXT NOT NULL,
+          context_value TEXT NOT NULL,
+          category TEXT NOT NULL,
+          subcategory TEXT,
+          frequency INTEGER NOT NULL DEFAULT 1,
+          confidence_score REAL DEFAULT 0.5,
+          last_updated TEXT NOT NULL,
+          UNIQUE(merchant, context_key, context_value, category, subcategory)
+        )
+        """
+    )
+
+
 def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
     conn = get_connection(db_path)
     try:
         cur = conn.cursor()
+        # Ensure all tables exist (migration-safe)
+        _create_missing_tables(cur)
         # transactions
         cur.execute(
             """
