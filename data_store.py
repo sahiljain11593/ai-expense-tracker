@@ -105,7 +105,7 @@ from __future__ import annotations
 import json
 import os
 import sqlite3
-from datetime import datetime
+from datetime import datetime, timedelta
 from typing import Dict, Iterable, List, Optional, Tuple
 
 
@@ -697,7 +697,7 @@ def find_potential_duplicates_fuzzy(date: str, description: str, amount: float, 
         List of potential duplicate transaction dicts with similarity scores
     """
     from difflib import SequenceMatcher
-    from datetime import datetime as dt, timedelta
+    from datetime import datetime, timedelta as dt, timedelta
     
     settings = get_dedupe_settings(db_path)
     threshold = settings['similarity_threshold']
@@ -1416,7 +1416,6 @@ def get_learning_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict:
         total_patterns = cur.fetchone()[0]
         
         # Recent learning activity (last 30 days)
-        from datetime import timedelta
         thirty_days_ago = (datetime.now() - timedelta(days=30)).isoformat()
         cur.execute("SELECT COUNT(*) FROM merchant_learning WHERE last_updated > ?", (thirty_days_ago,))
         recent_learning = cur.fetchone()[0]
@@ -1482,7 +1481,7 @@ def _get_amount_range(amount: float) -> str:
 def _get_day_pattern(date: str) -> str:
     """Get day pattern for learning (weekday/weekend)."""
     try:
-        from datetime import datetime
+        from datetime import datetime, timedelta
         date_obj = datetime.strptime(date, '%Y-%m-%d')
         if date_obj.weekday() < 5:  # Monday = 0, Sunday = 6
             return "weekday"
@@ -1495,7 +1494,7 @@ def _get_day_pattern(date: str) -> str:
 def _get_day_of_week(date: str) -> str:
     """Get day of week for contextual learning."""
     try:
-        from datetime import datetime
+        from datetime import datetime, timedelta
         date_obj = datetime.strptime(date, '%Y-%m-%d')
         days = ['monday', 'tuesday', 'wednesday', 'thursday', 'friday', 'saturday', 'sunday']
         return days[date_obj.weekday()]
