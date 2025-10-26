@@ -2700,10 +2700,17 @@ def main() -> None:
         
         # Save to database section
         st.subheader("💾 Save to Database")
+        
+        # Check if insert_transactions is available
+        try:
+            insert_transactions_available = insert_transactions is not None
+        except NameError:
+            insert_transactions_available = False
+        
         can_save = all(
             col in df_cat.columns
             for col in ["date", "description", "original_description", "amount", "currency", "fx_rate", "amount_jpy", "category", "subcategory", "transaction_type"]
-        ) and insert_transactions is not None
+        ) and insert_transactions_available
 
         # Save section with clear instructions
         st.subheader("💾 Save Transactions")
