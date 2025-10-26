@@ -1858,6 +1858,11 @@ def main() -> None:
         # Create DataFrame from resume data
         df = pd.DataFrame(st.session_state['resume_data'])
         
+        # Set flag and file info for duplicate analysis section (resume data is typically from CSV)
+        st.session_state['csv_file_uploaded'] = True
+        st.session_state['csv_file_name'] = f"Resumed Session {st.session_state['categorization_session_id']}"
+        st.session_state['csv_file_size'] = len(st.session_state['resume_data'])  # Use data length as size
+        
         # Convert date column to proper format
         if 'date' in df.columns:
             df['date'] = pd.to_datetime(df['date']).dt.strftime('%Y-%m-%d')
@@ -1885,6 +1890,10 @@ def main() -> None:
                     df = extract_transactions_from_pdf(uploaded_file)
                 elif uploaded_file.type == "text/csv":
                     df = extract_transactions_from_csv(uploaded_file, translation_mode, api_key)
+                    # Set flag and file info for duplicate analysis section
+                    st.session_state['csv_file_uploaded'] = True
+                    st.session_state['csv_file_name'] = uploaded_file.name
+                    st.session_state['csv_file_size'] = uploaded_file.size
                 else:
                     df = extract_transactions_from_image(uploaded_file)
             except Exception as e:
@@ -3244,14 +3253,18 @@ def main() -> None:
     st.session_state['duplicate_section_executed'] += 1
     
     # Only show duplicate analysis if we have a CSV file and it's not resume mode
-    if 'uploaded_file' in locals() and uploaded_file and uploaded_file.type == "text/csv" and not st.session_state.get('resume_mode', False):
+    # Use session state to track if we have a CSV file to avoid re-evaluation
+    if 'csv_file_uploaded' not in st.session_state:
+        st.session_state['csv_file_uploaded'] = False
+    
+    if st.session_state['csv_file_uploaded'] and not st.session_state.get('resume_mode', False):
         st.divider()
         st.subheader("🔍 Duplicate Analysis & Selective Import")
         st.caption("This section is completely independent from the main processing flow")
         st.caption(f"🔍 Debug: This section has been executed {st.session_state['duplicate_section_executed']} times")
         
         # Create a unique key for this file's duplicate analysis
-        file_key = f"duplicate_analysis_{uploaded_file.name}_{uploaded_file.size}"
+        file_key = f"duplicate_analysis_{st.session_state['csv_file_name']}_{st.session_state['csv_file_size']}"
         
         # Only run duplicate analysis if not already done for this specific file
         if file_key not in st.session_state or not st.session_state[file_key]:
@@ -3335,15 +3348,6 @@ def main() -> None:
                                 st.session_state[selection_key].add(tx_key)
                             else:
                                 st.session_state[selection_key].discard(tx_key)
-                            
-                            # Debug: Show if this checkbox change triggered processing
-                            if 'last_checkbox_change' not in st.session_state:
-                                st.session_state['last_checkbox_change'] = None
-                            
-                            if st.session_state['last_checkbox_change'] != tx_key:
-                                st.session_state['last_checkbox_change'] = tx_key
-                                # This is just for debugging - will be removed
-                                st.caption("🔄 Checkbox changed")
                         
                         with col3:
                             st.caption("Duplicate")
@@ -3370,7 +3374,7 @@ def main() -> None:
                             from data_store import insert_transactions, create_import_record
                             
                             # Create import record
-                            import_batch_id = create_import_record(f"{uploaded_file.name}_duplicates", selected_count)
+                            import_batch_id = create_import_record(f"{st.session_state['csv_file_name']}_duplicates", selected_count)
                             
                             # Prepare selected transactions for import
                             transactions_to_import = []
