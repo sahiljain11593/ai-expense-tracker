@@ -1462,7 +1462,8 @@ def main() -> None:
                     
                     # Date range info
                     if 'date' in df_saved.columns:
-                        df_saved['date'] = pd.to_datetime(df_saved['date'])
+                        # Handle dates that may have time components
+                        df_saved['date'] = pd.to_datetime(df_saved['date'], errors='coerce')
                         min_date = df_saved['date'].min().strftime('%Y-%m-%d')
                         max_date = df_saved['date'].max().strftime('%Y-%m-%d')
                         st.caption(f"📅 Date range: {min_date} to {max_date}")
@@ -1619,9 +1620,14 @@ def main() -> None:
                         df_filtered = df_filtered[df_filtered['transaction_type'].isin(saved_types)]
                     
                     if date_from and 'date' in df_filtered.columns:
+                        # Convert date column to datetime for comparison
+                        df_filtered['date'] = pd.to_datetime(df_filtered['date'], errors='coerce')
                         df_filtered = df_filtered[df_filtered['date'] >= pd.Timestamp(date_from)]
                     
                     if date_to and 'date' in df_filtered.columns:
+                        # Ensure date column is datetime for comparison
+                        if not pd.api.types.is_datetime64_any_dtype(df_filtered['date']):
+                            df_filtered['date'] = pd.to_datetime(df_filtered['date'], errors='coerce')
                         df_filtered = df_filtered[df_filtered['date'] <= pd.Timestamp(date_to)]
                     
                     if saved_search:
