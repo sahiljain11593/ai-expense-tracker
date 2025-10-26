@@ -1550,71 +1550,70 @@ def main() -> None:
                     
                     # Import History and Discarded Duplicates
                     st.subheader("📋 Import History & Discarded Duplicates")
-                    
+
                     try:
                         from data_store import get_import_history, get_discarded_duplicates, restore_discarded_duplicate
-                        
+
                         # Get import history
                         import_history = get_import_history()
-                        
+
                         if import_history:
-                            st.write("**Recent Imports:**")
-                            
-                            for import_record in import_history[:5]:  # Show last 5 imports
-                                col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
-                                
-                                with col1:
-                                    st.write(f"📁 {import_record['file_name']}")
-                                    st.caption(f"Imported: {import_record['imported_at']}")
-                                
-                                with col2:
-                                    st.metric("Inserted", import_record['inserted_count'])
-                                
-                                with col3:
-                                    st.metric("Discarded", import_record['discarded_count'])
-                                
-                                with col4:
-                                    if import_record['discarded_count'] > 0:
-                                        if st.button(f"View Discarded", key=f"view_discarded_{import_record['id']}"):
-                                            st.session_state[f"show_discarded_{import_record['id']}"] = True
-                                
-                                # Show discarded duplicates for this import
-                                if st.session_state.get(f"show_discarded_{import_record['id']}", False):
-                                    discarded = get_discarded_duplicates(import_record['id'])
-                                    
-                                    if discarded:
-                                        st.write(f"**Discarded Duplicates from {import_record['file_name']}:**")
-                                        
-                                        for i, discard in enumerate(discarded):
-                                            col_d1, col_d2, col_d3 = st.columns([3, 1, 1])
-                                            
-                                            with col_d1:
-                                                # Fix currency display - show Yen instead of Dollar
-                                                currency_symbol = "¥" if discard['amount'] > 0 else "¥"
-                                                st.write(f"• {discard['date']} | {discard['description']} | {currency_symbol}{discard['amount']:.2f}")
-                                                st.caption(f"Reason: {discard['reason']} | Hash: {discard['dedupe_hash'][:16]}...")
-                                            
-                                            with col_d2:
-                                                if st.button("Restore", key=f"restore_{discard['id']}"):
-                                                    if restore_discarded_duplicate(discard['id']):
-                                                        st.success("✅ Restored!")
-                                                        st.rerun()
-                                                    else:
-                                                        st.error("❌ Failed to restore")
-                                            
-                                            with col_d3:
-                                                if st.button("Keep Discarded", key=f"keep_{discard['id']}"):
-                                                    st.info("✅ Kept as discarded")
-                                    
+                            # Top-level totals across shown imports
+                            visible_history = import_history[:5]
+                            total_inserted = sum(int(h.get('inserted_count', 0)) for h in visible_history)
+                            total_discarded = sum(int(h.get('discarded_count', 0)) for h in visible_history)
+
+                            mcol1, mcol2, mcol3 = st.columns([1, 1, 1])
+                            with mcol1:
+                                st.metric("Imports (latest 5)", len(visible_history))
+                            with mcol2:
+                                st.metric("Inserted", total_inserted)
+                            with mcol3:
+                                st.metric("Discarded", total_discarded)
+
+                            st.caption("Click a card to view and restore discarded items")
+
+                            for import_record in visible_history:
+                                header = (
+                                    f"📁 {import_record['file_name']}  ·  "
+                                    f"Imported: {import_record['imported_at']}  ·  "
+                                    f"Inserted: {import_record['inserted_count']}  ·  "
+                                    f"Discarded: {import_record['discarded_count']}"
+                                )
+
+                                with st.expander(header, expanded=False):
+                                    if int(import_record.get('discarded_count', 0)) > 0:
+                                        discarded = get_discarded_duplicates(import_record['id'])
+
+                                        if discarded:
+                                            for i, discard in enumerate(discarded):
+                                                col_d1, col_d2 = st.columns([5, 1])
+
+                                                with col_d1:
+                                                    currency_symbol = "¥"
+                                                    st.write(
+                                                        f"• {discard['date']} | {discard['description']} | "
+                                                        f"{currency_symbol}{discard['amount']:.2f}"
+                                                    )
+                                                    st.caption(
+                                                        f"Reason: {discard['reason']} | "
+                                                        f"Hash: {discard['dedupe_hash'][:16]}..."
+                                                    )
+
+                                                with col_d2:
+                                                    if st.button("Restore", key=f"restore_{discard['id']}"):
+                                                        if restore_discarded_duplicate(discard['id']):
+                                                            st.success("✅ Restored")
+                                                            st.rerun()
+                                                        else:
+                                                            st.error("❌ Failed")
+                                        else:
+                                            st.info("No discarded duplicates for this import")
                                     else:
-                                        st.info("No discarded duplicates for this import")
-                                    
-                                    if st.button("Hide", key=f"hide_discarded_{import_record['id']}"):
-                                        st.session_state[f"show_discarded_{import_record['id']}"] = False
-                                        st.rerun()
+                                        st.success("No discarded duplicates in this import")
                         else:
                             st.info("No import history found")
-                            
+
                     except Exception as e:
                         st.error(f"Error loading import history: {e}")
                     
@@ -3390,6 +3389,9 @@ def main() -> None:
                     st.session_state.pop(f"select_all_{file_key}", None)
                     st.session_state[clear_key] = False
 
+                # Build/version indicator for deployment freshness verification
+                st.caption("Build: 2025-10-26 15:55Z · dupe-badge-ascii · history-cards")
+
                 # Use a form so checkbox changes do NOT trigger reruns; only the submit does
                 with st.form(f"dup_form_{file_key}"):
                     # Optional: select all toggle inside the form
@@ -3415,8 +3417,8 @@ def main() -> None:
                                         all_hashes = [compute_dedupe_hash(str(t['date']), str(t['description']), float(t['amount'])) for g in duplicates.values() for t in g]
                                         existing = get_existing_dedupe_hashes(all_hashes)
                                         st.session_state[f"existing_hashes_{file_key}"] = existing
-                                    badge = "  
-                                    ✅ Already saved" if dh in existing else ""
+                                    # Plain ASCII to avoid any encoding/parsing issues in some environments
+                                    badge = ('  [saved]') if dh in existing else ''
                                 except Exception:
                                     badge = ""
                                 st.write(f"  • Row {tx['row']}: {tx['date']} | {tx['description']} | {currency_symbol}{tx['amount']:.2f}{badge}")
