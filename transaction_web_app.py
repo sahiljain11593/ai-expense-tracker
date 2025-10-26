@@ -1469,6 +1469,41 @@ def main() -> None:
                     
                     st.divider()
                     
+                    # Duplicate Analysis Section
+                    st.subheader("🔍 Duplicate Analysis")
+                    st.caption("Analyze which transactions were marked as duplicates during import")
+                    
+                    # Check for duplicates in the current dataset
+                    if 'dedupe_hash' in df_saved.columns:
+                        # Group by dedupe hash to find duplicates
+                        hash_counts = df_saved['dedupe_hash'].value_counts()
+                        duplicates = hash_counts[hash_counts > 1]
+                        
+                        if len(duplicates) > 0:
+                            st.warning(f"⚠️ Found {len(duplicates)} duplicate groups in your data")
+                            
+                            # Show duplicate groups
+                            with st.expander(f"View {len(duplicates)} Duplicate Groups", expanded=False):
+                                for i, (dedupe_hash, count) in enumerate(duplicates.items(), 1):
+                                    duplicate_txs = df_saved[df_saved['dedupe_hash'] == dedupe_hash]
+                                    
+                                    st.write(f"**Group {i}** ({count} transactions):")
+                                    
+                                    # Show details of duplicate transactions
+                                    for idx, tx in duplicate_txs.iterrows():
+                                        st.write(f"  • {tx['date']} | {tx['description']} | ${tx['amount']:.2f} | {tx['category']}")
+                                    
+                                    # Show why they're considered duplicates
+                                    first_tx = duplicate_txs.iloc[0]
+                                    st.caption(f"   Hash: {dedupe_hash[:16]}... | Date: {first_tx['date']} | Description: '{first_tx['description']}' | Amount: ${first_tx['amount']:.2f}")
+                                    st.divider()
+                        else:
+                            st.success("✅ No duplicate transactions found in current data")
+                    else:
+                        st.info("ℹ️ Duplicate analysis not available - dedupe_hash column missing")
+                    
+                    st.divider()
+                    
                     # Filters for saved transactions
                     st.subheader("🔍 Filter Saved Transactions")
                     filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 1, 1, 1])
@@ -1734,6 +1769,58 @@ def main() -> None:
             except Exception as e:
                 st.error(f"Error processing file: {e}")
                 return
+        
+        # Duplicate Analysis for CSV files
+        if uploaded_file.type == "text/csv" and not st.session_state.get('resume_mode', False):
+            st.subheader("🔍 Pre-Import Duplicate Analysis")
+            
+            # Analyze the uploaded CSV for potential duplicates
+            try:
+                from data_store import compute_dedupe_hash
+                from collections import defaultdict
+                
+                # Create a copy of the dataframe for analysis
+                df_analysis = df.copy()
+                
+                # Find potential duplicates
+                hash_groups = defaultdict(list)
+                
+                for idx, row in df_analysis.iterrows():
+                    date = str(row.get('date', ''))
+                    desc = str(row.get('description', ''))
+                    amount = float(row.get('amount', 0))
+                    
+                    # Compute dedupe hash
+                    dedupe_hash = compute_dedupe_hash(date, desc, amount)
+                    hash_groups[dedupe_hash].append({
+                        'row': idx + 1,
+                        'date': date,
+                        'description': desc,
+                        'amount': amount
+                    })
+                
+                # Find duplicates
+                duplicates = {h: group for h, group in hash_groups.items() if len(group) > 1}
+                
+                if duplicates:
+                    st.warning(f"⚠️ Found {len(duplicates)} potential duplicate groups in your CSV file")
+                    
+                    with st.expander(f"View {len(duplicates)} Duplicate Groups", expanded=False):
+                        for i, (dedupe_hash, group) in enumerate(duplicates.items(), 1):
+                            st.write(f"**Group {i}** ({len(group)} transactions):")
+                            
+                            for j, tx in enumerate(group):
+                                st.write(f"  • Row {tx['row']}: {tx['date']} | {tx['description']} | ${tx['amount']:.2f}")
+                            
+                            st.caption(f"   Hash: {dedupe_hash[:16]}...")
+                            st.divider()
+                    
+                    st.info(f"💡 These {sum(len(group) - 1 for group in duplicates.values())} transactions will be skipped during import to prevent duplicates.")
+                else:
+                    st.success("✅ No duplicate transactions found in your CSV file")
+                    
+            except Exception as e:
+                st.error(f"Error analyzing duplicates: {e}")
         
         # Initialize learning system
         learning_system = MerchantLearningSystem()
