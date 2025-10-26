@@ -1288,6 +1288,35 @@ def main() -> None:
                     # Session details
                     st.caption(f"**Started:** {session['started_at'][:19]}")
                     st.caption(f"**Last updated:** {session['last_updated'][:19]}")
+                    st.caption(f"**Status:** {session['status']}")
+                    st.caption(f"**Total transactions:** {session['total_transactions']}")
+                    st.caption(f"**Reviewed transactions:** {session['reviewed_transactions']}")
+                    
+                    # Debug information
+                    with st.expander("🔍 Debug Info", expanded=False):
+                        st.json(session)
+                        
+                        # Check if categorization_progress table has data for this session
+                        try:
+                            from data_store import get_connection
+                            import sqlite3
+                            
+                            conn = get_connection()
+                            cur = conn.cursor()
+                            cur.execute("SELECT COUNT(*) FROM categorization_progress WHERE session_id = ?", (session['id'],))
+                            progress_count = cur.fetchone()[0]
+                            st.write(f"**Transactions in categorization_progress:** {progress_count}")
+                            
+                            if progress_count > 0:
+                                cur.execute("SELECT * FROM categorization_progress WHERE session_id = ? LIMIT 3", (session['id'],))
+                                sample_data = cur.fetchall()
+                                st.write("**Sample data:**")
+                                for row in sample_data:
+                                    st.write(f"- {row}")
+                            
+                            conn.close()
+                        except Exception as e:
+                            st.error(f"Debug error: {e}")
                     
                     # Resume button
                     if st.button(f"🔄 Resume Session {session['id']}", key=f"resume_{session['id']}"):
@@ -1306,7 +1335,23 @@ def main() -> None:
                             st.success(f"🔄 Resumed session {session['id']} with {len(session_transactions)} transactions!")
                             st.rerun()
                         else:
+                            # Provide more detailed error information
                             st.error("❌ No transactions found for this session")
+                            st.caption(f"Session ID: {session['id']}, File: {session['file_name']}")
+                            st.caption("This might happen if:")
+                            st.caption("• The session was created but no transactions were saved")
+                            st.caption("• The session data was corrupted")
+                            st.caption("• The database was reset")
+                            
+                            # Offer to delete the empty session
+                            if st.button(f"🗑️ Delete Empty Session {session['id']}", key=f"delete_empty_{session['id']}"):
+                                try:
+                                    if complete_categorization_session:
+                                        complete_categorization_session(session['id'])
+                                        st.success("✅ Empty session deleted!")
+                                        st.rerun()
+                                except Exception as e:
+                                    st.error(f"❌ Error deleting session: {e}")
                     
                     # Delete session button
                     if st.button(f"🗑️ Delete Session {session['id']}", key=f"delete_{session['id']}"):
