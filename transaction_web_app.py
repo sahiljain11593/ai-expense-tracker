@@ -1862,6 +1862,8 @@ def main() -> None:
         st.session_state['csv_file_uploaded'] = True
         st.session_state['csv_file_name'] = f"Resumed Session {st.session_state['categorization_session_id']}"
         st.session_state['csv_file_size'] = len(st.session_state['resume_data'])  # Use data length as size
+        # Store dataframe for duplicate analysis
+        st.session_state['csv_dataframe'] = st.session_state['resume_data']
         
         # Convert date column to proper format
         if 'date' in df.columns:
@@ -1883,6 +1885,12 @@ def main() -> None:
         type=["pdf", "png", "jpg", "jpeg", "csv"])
     
     if uploaded_file is not None:
+        # Clear previous CSV file state when new file is uploaded
+        st.session_state['csv_file_uploaded'] = False
+        st.session_state['csv_file_name'] = None
+        st.session_state['csv_file_size'] = None
+        st.session_state['csv_dataframe'] = None
+        
         # Check if we're in resume mode (df already created above)
         if not st.session_state.get('resume_mode', False):
             try:
@@ -1894,6 +1902,8 @@ def main() -> None:
                     st.session_state['csv_file_uploaded'] = True
                     st.session_state['csv_file_name'] = uploaded_file.name
                     st.session_state['csv_file_size'] = uploaded_file.size
+                    # Store dataframe for duplicate analysis
+                    st.session_state['csv_dataframe'] = df.to_dict('records')
                 else:
                     df = extract_transactions_from_image(uploaded_file)
             except Exception as e:
@@ -3264,7 +3274,10 @@ def main() -> None:
         st.caption(f"🔍 Debug: This section has been executed {st.session_state['duplicate_section_executed']} times")
         
         # Create a unique key for this file's duplicate analysis
-        file_key = f"duplicate_analysis_{st.session_state['csv_file_name']}_{st.session_state['csv_file_size']}"
+        # Safely handle None values
+        file_name = st.session_state.get('csv_file_name', 'unknown')
+        file_size = st.session_state.get('csv_file_size', 0)
+        file_key = f"duplicate_analysis_{file_name}_{file_size}"
         
         # Only run duplicate analysis if not already done for this specific file
         if file_key not in st.session_state or not st.session_state[file_key]:
@@ -3274,8 +3287,13 @@ def main() -> None:
                 from data_store import compute_dedupe_hash
                 from collections import defaultdict
                 
-                # Create a copy of the dataframe for analysis
-                df_analysis = df.copy()
+                # Create a copy of the dataframe for analysis from session state
+                csv_data = st.session_state.get('csv_dataframe', [])
+                if not csv_data:
+                    st.error("❌ No CSV data available for duplicate analysis")
+                    st.session_state[file_key] = True
+                    return
+                df_analysis = pd.DataFrame(csv_data)
                 
                 # Find potential duplicates
                 hash_groups = defaultdict(list)
@@ -3314,7 +3332,11 @@ def main() -> None:
         # Show duplicate analysis UI (completely independent)
         if f'{file_key}_groups' in st.session_state and st.session_state[f'{file_key}_groups']:
             duplicates = st.session_state[f'{file_key}_groups']
-            df_analysis = st.session_state[f'{file_key}_df']
+            df_analysis = st.session_state.get(f'{file_key}_df')
+            
+            if df_analysis is None:
+                st.error("❌ Analysis data not available")
+                return
             
             st.write("**Requirements Met:**")
             st.write("✅ Check duplicates marked by system")
@@ -3374,10 +3396,18 @@ def main() -> None:
                             from data_store import insert_transactions, create_import_record
                             
                             # Create import record
-                            import_batch_id = create_import_record(f"{st.session_state['csv_file_name']}_duplicates", selected_count)
+                            safe_file_name = st.session_state.get('csv_file_name', 'unknown_file')
+                            import_batch_id = create_import_record(f"{safe_file_name}_duplicates", selected_count)
                             
                             # Prepare selected transactions for import
                             transactions_to_import = []
+                            
+                            # Get dataframe from session state
+                            csv_data = st.session_state.get('csv_dataframe', [])
+                            if not csv_data:
+                                st.error("❌ No CSV data available for import")
+                                return
+                            df_analysis = pd.DataFrame(csv_data)
                             
                             for tx_key in st.session_state[selection_key]:
                                 # Parse the key to get group and transaction info
