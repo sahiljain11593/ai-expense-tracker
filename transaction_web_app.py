@@ -1900,6 +1900,9 @@ def main() -> None:
         for key in keys_to_remove:
             del st.session_state[key]
         
+        # Reset debug counter for new file
+        st.session_state['duplicate_section_executed'] = 0
+        
         # Check if we're in resume mode (df already created above)
         if not st.session_state.get('resume_mode', False):
             try:
@@ -3311,24 +3314,34 @@ def main() -> None:
                     st.error("❌ No CSV data available for duplicate analysis")
                     st.session_state[file_key] = True
                     return
-                df_analysis = pd.DataFrame(csv_data)
+                
+                try:
+                    df_analysis = pd.DataFrame(csv_data)
+                except Exception as e:
+                    st.error(f"❌ Error creating dataframe from CSV data: {e}")
+                    st.session_state[file_key] = True
+                    return
                 
                 # Find potential duplicates
                 hash_groups = defaultdict(list)
                 
                 for idx, row in df_analysis.iterrows():
-                    date = str(row.get('date', ''))
-                    desc = str(row.get('description', ''))
-                    amount = float(row.get('amount', 0))
-                    
-                    # Compute dedupe hash
-                    dedupe_hash = compute_dedupe_hash(date, desc, amount)
-                    hash_groups[dedupe_hash].append({
-                        'row': idx + 1,
-                        'date': date,
-                        'description': desc,
-                        'amount': amount
-                    })
+                    try:
+                        date = str(row.get('date', ''))
+                        desc = str(row.get('description', ''))
+                        amount = float(row.get('amount', 0))
+                        
+                        # Compute dedupe hash
+                        dedupe_hash = compute_dedupe_hash(date, desc, amount)
+                        hash_groups[dedupe_hash].append({
+                            'row': idx + 1,
+                            'date': date,
+                            'description': desc,
+                            'amount': amount
+                        })
+                    except Exception as e:
+                        st.warning(f"⚠️ Skipping row {idx + 1} due to data error: {e}")
+                        continue
                 
                 # Find duplicates
                 duplicates = {h: group for h, group in hash_groups.items() if len(group) > 1}
@@ -3431,29 +3444,46 @@ def main() -> None:
                             if not csv_data:
                                 st.error("❌ No CSV data available for import")
                                 return
-                            df_analysis = pd.DataFrame(csv_data)
+                            
+                            try:
+                                df_analysis = pd.DataFrame(csv_data)
+                            except Exception as e:
+                                st.error(f"❌ Error creating dataframe from CSV data: {e}")
+                                return
                             
                             for tx_key in st.session_state[selection_key]:
                                 # Parse the key to get group and transaction info
                                 parts = tx_key.split('_')
                                 row_num = int(parts[-1]) - 1  # Last part is row number
                                 
-                                # Get the transaction data
-                                row_data = df_analysis.iloc[row_num].to_dict()
+                                # Validate row number and get transaction data
+                                if row_num < 0 or row_num >= len(df_analysis):
+                                    st.error(f"❌ Invalid row number {row_num} for transaction {tx_key}")
+                                    continue
                                 
-                                # Prepare transaction data
-                                tx_data = {
-                                    'date': str(row_data.get('date', '')),
-                                    'description': str(row_data.get('description', '')),
-                                    'original_description': str(row_data.get('original_description', '')),
-                                    'amount': float(row_data.get('amount', 0)),
-                                    'currency': str(row_data.get('currency', 'JPY')),
-                                    'fx_rate': float(row_data.get('fx_rate', 1.0)),
-                                    'amount_jpy': float(row_data.get('amount_jpy', row_data.get('amount', 0))),
-                                    'category': str(row_data.get('category', '')),
-                                    'subcategory': str(row_data.get('subcategory', '')),
-                                    'transaction_type': str(row_data.get('transaction_type', 'Expense'))
-                                }
+                                try:
+                                    row_data = df_analysis.iloc[row_num].to_dict()
+                                except Exception as e:
+                                    st.error(f"❌ Error accessing row {row_num}: {e}")
+                                    continue
+                                
+                                # Prepare transaction data with error handling
+                                try:
+                                    tx_data = {
+                                        'date': str(row_data.get('date', '')),
+                                        'description': str(row_data.get('description', '')),
+                                        'original_description': str(row_data.get('original_description', '')),
+                                        'amount': float(row_data.get('amount', 0)),
+                                        'currency': str(row_data.get('currency', 'JPY')),
+                                        'fx_rate': float(row_data.get('fx_rate', 1.0)),
+                                        'amount_jpy': float(row_data.get('amount_jpy', row_data.get('amount', 0))),
+                                        'category': str(row_data.get('category', '')),
+                                        'subcategory': str(row_data.get('subcategory', '')),
+                                        'transaction_type': str(row_data.get('transaction_type', 'Expense'))
+                                    }
+                                except Exception as e:
+                                    st.error(f"❌ Error preparing transaction data for row {row_num}: {e}")
+                                    continue
                                 transactions_to_import.append(tx_data)
                             
                             # Insert all selected transactions
