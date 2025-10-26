@@ -87,11 +87,18 @@ Schema (initial):
       merchant TEXT NOT NULL
       context_key TEXT NOT NULL  -- 'amount_range', 'day_of_week', 'time_of_day', 'amount_pattern'
       context_value TEXT NOT NULL
-      category TEXT NOT NULL
-      subcategory TEXT
-      frequency INTEGER NOT NULL DEFAULT 1
-      confidence_score REAL DEFAULT 0.5
-      last_updated TEXT NOT NULL
+
+  - discarded_duplicates
+      id INTEGER PRIMARY KEY AUTOINCREMENT
+      import_batch_id INTEGER NOT NULL
+      date TEXT NOT NULL
+      description TEXT NOT NULL
+      amount REAL NOT NULL
+      dedupe_hash TEXT NOT NULL
+      reason TEXT NOT NULL  -- 'exact_duplicate', 'similar_duplicate', 'manual_skip'
+      discarded_at TEXT NOT NULL
+      original_data TEXT  -- JSON of original transaction data
+      FOREIGN KEY (import_batch_id) REFERENCES imports(id)
       UNIQUE(merchant, context_key, context_value, category, subcategory)
 
 Notes
@@ -211,6 +218,24 @@ def _create_missing_tables(cur: sqlite3.Cursor) -> None:
           confidence_score REAL DEFAULT 0.5,
           last_updated TEXT NOT NULL,
           UNIQUE(merchant, context_key, context_value, category, subcategory)
+        )
+        """
+    )
+
+    # discarded duplicates
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS discarded_duplicates (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          import_batch_id INTEGER NOT NULL,
+          date TEXT NOT NULL,
+          description TEXT NOT NULL,
+          amount REAL NOT NULL,
+          dedupe_hash TEXT NOT NULL,
+          reason TEXT NOT NULL,
+          discarded_at TEXT NOT NULL,
+          original_data TEXT,
+          FOREIGN KEY (import_batch_id) REFERENCES imports(id)
         )
         """
     )
@@ -468,6 +493,27 @@ def insert_transactions(
                 # UNIQUE(dedupe_hash) violated => duplicate
                 dupes += 1
                 dupe_hashes.append(dedupe_hash)
+                
+                # Track discarded duplicate
+                import json
+                cur.execute(
+                    """
+                    INSERT INTO discarded_duplicates (
+                        import_batch_id, date, description, amount, dedupe_hash,
+                        reason, discarded_at, original_data
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        import_batch_id,
+                        date_str,
+                        r.get("description"),
+                        float(r.get("amount", 0.0)),
+                        dedupe_hash,
+                        "exact_duplicate",
+                        datetime.utcnow().isoformat(timespec="seconds"),
+                        json.dumps(r)
+                    )
+                )
 
         conn.commit()
         return inserted, dupes, dupe_hashes
@@ -1523,5 +1569,123 @@ def _get_amount_pattern(amount: float) -> str:
     else:
         return "irregular"
 
+
+def get_discarded_duplicates(import_batch_id: Optional[int] = None, db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
+    """Get discarded duplicates, optionally filtered by import batch."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        
+        if import_batch_id:
+            cur.execute(
+                """
+                SELECT dd.*, i.file_name, i.imported_at
+                FROM discarded_duplicates dd
+                JOIN imports i ON dd.import_batch_id = i.id
+                WHERE dd.import_batch_id = ?
+                ORDER BY dd.discarded_at DESC
+                """,
+                (import_batch_id,)
+            )
+        else:
+            cur.execute(
+                """
+                SELECT dd.*, i.file_name, i.imported_at
+                FROM discarded_duplicates dd
+                JOIN imports i ON dd.import_batch_id = i.id
+                ORDER BY dd.discarded_at DESC
+                """
+            )
+        
+        rows = cur.fetchall()
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in rows]
+    finally:
+        conn.close()
+
+
+def get_import_history(db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
+    """Get import history with statistics."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            SELECT 
+                i.*,
+                COUNT(t.id) as inserted_count,
+                COUNT(dd.id) as discarded_count
+            FROM imports i
+            LEFT JOIN transactions t ON i.id = t.import_batch_id
+            LEFT JOIN discarded_duplicates dd ON i.id = dd.import_batch_id
+            GROUP BY i.id
+            ORDER BY i.imported_at DESC
+            """
+        )
+        
+        rows = cur.fetchall()
+        columns = [desc[0] for desc in cur.description]
+        return [dict(zip(columns, row)) for row in rows]
+    finally:
+        conn.close()
+
+
+def restore_discarded_duplicate(discarded_id: int, db_path: str = DEFAULT_DB_PATH) -> bool:
+    """Restore a discarded duplicate as a legitimate transaction."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        
+        # Get the discarded duplicate data
+        cur.execute("SELECT * FROM discarded_duplicates WHERE id = ?", (discarded_id,))
+        discarded = cur.fetchone()
+        
+        if not discarded:
+            return False
+        
+        # Parse original data
+        import json
+        original_data = json.loads(discarded[8])  # original_data column
+        
+        # Insert as new transaction
+        date_str = discarded[2]  # date
+        dedupe_hash = discarded[6]  # dedupe_hash
+        created_at = datetime.utcnow().isoformat(timespec="seconds")
+        
+        cur.execute(
+            """
+            INSERT INTO transactions (
+                date, description, original_description, amount,
+                currency, fx_rate, amount_jpy, category, subcategory,
+                transaction_type, import_batch_id, dedupe_hash, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            (
+                date_str,
+                original_data.get("description"),
+                original_data.get("original_description"),
+                float(original_data.get("amount", 0.0)),
+                original_data.get("currency", "JPY"),
+                float(original_data.get("fx_rate", 1.0)),
+                float(original_data.get("amount_jpy", original_data.get("amount", 0.0))),
+                original_data.get("category"),
+                original_data.get("subcategory"),
+                original_data.get("transaction_type"),
+                discarded[1],  # import_batch_id
+                dedupe_hash,
+                created_at,
+            ),
+        )
+        
+        # Remove from discarded duplicates
+        cur.execute("DELETE FROM discarded_duplicates WHERE id = ?", (discarded_id,))
+        
+        conn.commit()
+        return True
+    except Exception as e:
+        conn.rollback()
+        return False
+    finally:
+        conn.close()
 
 

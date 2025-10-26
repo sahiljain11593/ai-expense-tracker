@@ -1502,6 +1502,74 @@ def main() -> None:
                     else:
                         st.info("ℹ️ Duplicate analysis not available - dedupe_hash column missing")
                     
+                    # Import History and Discarded Duplicates
+                    st.subheader("📋 Import History & Discarded Duplicates")
+                    
+                    try:
+                        from data_store import get_import_history, get_discarded_duplicates, restore_discarded_duplicate
+                        
+                        # Get import history
+                        import_history = get_import_history()
+                        
+                        if import_history:
+                            st.write("**Recent Imports:**")
+                            
+                            for import_record in import_history[:5]:  # Show last 5 imports
+                                col1, col2, col3, col4 = st.columns([2, 1, 1, 1])
+                                
+                                with col1:
+                                    st.write(f"📁 {import_record['file_name']}")
+                                    st.caption(f"Imported: {import_record['imported_at']}")
+                                
+                                with col2:
+                                    st.metric("Inserted", import_record['inserted_count'])
+                                
+                                with col3:
+                                    st.metric("Discarded", import_record['discarded_count'])
+                                
+                                with col4:
+                                    if import_record['discarded_count'] > 0:
+                                        if st.button(f"View Discarded", key=f"view_discarded_{import_record['id']}"):
+                                            st.session_state[f"show_discarded_{import_record['id']}"] = True
+                                
+                                # Show discarded duplicates for this import
+                                if st.session_state.get(f"show_discarded_{import_record['id']}", False):
+                                    discarded = get_discarded_duplicates(import_record['id'])
+                                    
+                                    if discarded:
+                                        st.write(f"**Discarded Duplicates from {import_record['file_name']}:**")
+                                        
+                                        for i, discard in enumerate(discarded):
+                                            col_d1, col_d2, col_d3 = st.columns([3, 1, 1])
+                                            
+                                            with col_d1:
+                                                st.write(f"• {discard['date']} | {discard['description']} | ${discard['amount']:.2f}")
+                                                st.caption(f"Reason: {discard['reason']} | Hash: {discard['dedupe_hash'][:16]}...")
+                                            
+                                            with col_d2:
+                                                if st.button("Restore", key=f"restore_{discard['id']}"):
+                                                    if restore_discarded_duplicate(discard['id']):
+                                                        st.success("✅ Restored!")
+                                                        st.rerun()
+                                                    else:
+                                                        st.error("❌ Failed to restore")
+                                            
+                                            with col_d3:
+                                                if st.button("Keep Discarded", key=f"keep_{discard['id']}"):
+                                                    st.info("✅ Kept as discarded")
+                                    
+                                    else:
+                                        st.info("No discarded duplicates for this import")
+                                    
+                                    if st.button("Hide", key=f"hide_discarded_{import_record['id']}"):
+                                        st.session_state[f"show_discarded_{import_record['id']}"] = False
+                                        st.rerun()
+                        else:
+                            st.info("No import history found")
+                            
+                    except Exception as e:
+                        st.error(f"Error loading import history: {e}")
+                    
                     st.divider()
                     
                     # Filters for saved transactions
