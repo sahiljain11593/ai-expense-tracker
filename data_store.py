@@ -113,7 +113,7 @@ import json
 import os
 import sqlite3
 from datetime import datetime, timedelta
-from typing import Dict, Iterable, List, Optional, Tuple
+from typing import Dict, Iterable, List, Optional, Tuple, Set
 
 
 DEFAULT_DB_PATH = os.path.join("data", "expenses.db")
@@ -434,6 +434,7 @@ def insert_transactions(
     rows: Iterable[Dict],
     import_batch_id: Optional[int] = None,
     db_path: str = DEFAULT_DB_PATH,
+    override_duplicates: bool = False,
 ) -> Tuple[int, int, List[str]]:
     """
     Insert transactions with exact-dedupe on (date|description|amount).
@@ -491,30 +492,63 @@ def insert_transactions(
                 inserted += 1
             except sqlite3.IntegrityError:
                 # UNIQUE(dedupe_hash) violated => duplicate
+                if override_duplicates:
+                    # Insert again with a unique dedupe hash suffix to allow intentional duplicate import
+                    dedupe_hash_override = f"{dedupe_hash}:{created_at}"
+                    try:
+                        cur.execute(
+                            """
+                            INSERT INTO transactions (
+                              date, description, original_description, amount,
+                              currency, fx_rate, amount_jpy, category, subcategory,
+                              transaction_type, import_batch_id, dedupe_hash, created_at
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                date_str,
+                                r.get("description"),
+                                r.get("original_description"),
+                                float(r.get("amount", 0.0)),
+                                r.get("currency", "JPY"),
+                                float(r.get("fx_rate", 1.0)),
+                                float(r.get("amount_jpy", r.get("amount", 0.0))),
+                                r.get("category"),
+                                r.get("subcategory"),
+                                r.get("transaction_type"),
+                                import_batch_id,
+                                dedupe_hash_override,
+                                created_at,
+                            ),
+                        )
+                        inserted += 1
+                    except sqlite3.IntegrityError:
+                        # If override also collides (extremely unlikely), count as duplicate
                 dupes += 1
                 dupe_hashes.append(dedupe_hash)
-                
-                # Track discarded duplicate only when we have a valid import batch
-                if import_batch_id is not None:
-                    import json
-                    cur.execute(
-                        """
-                        INSERT INTO discarded_duplicates (
-                            import_batch_id, date, description, amount, dedupe_hash,
-                            reason, discarded_at, original_data
-                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                        """,
-                        (
-                            import_batch_id,
-                            date_str,
-                            r.get("description"),
-                            float(r.get("amount", 0.0)),
-                            dedupe_hash,
-                            "exact_duplicate",
-                            datetime.utcnow().isoformat(timespec="seconds"),
-                            json.dumps(r)
+                else:
+                    dupes += 1
+                    dupe_hashes.append(dedupe_hash)
+                    # Track discarded duplicate only when we have a valid import batch
+                    if import_batch_id is not None:
+                        import json
+                        cur.execute(
+                            """
+                            INSERT INTO discarded_duplicates (
+                                import_batch_id, date, description, amount, dedupe_hash,
+                                reason, discarded_at, original_data
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                import_batch_id,
+                                date_str,
+                                r.get("description"),
+                                float(r.get("amount", 0.0)),
+                                dedupe_hash,
+                                "exact_duplicate",
+                                datetime.utcnow().isoformat(timespec="seconds"),
+                                json.dumps(r)
+                            )
                         )
-                    )
 
         conn.commit()
         return inserted, dupes, dupe_hashes
@@ -1692,3 +1726,16 @@ def restore_discarded_duplicate(discarded_id: int, db_path: str = DEFAULT_DB_PAT
         conn.close()
 
 
+
+# Utility: check which dedupe hashes already exist in DB
+def get_existing_dedupe_hashes(hashes: List[str], db_path: str = DEFAULT_DB_PATH) -> Set[str]:
+    if not hashes:
+        return set()
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        placeholders = ",".join(["?"] * len(hashes))
+        cur.execute(f"SELECT dedupe_hash FROM transactions WHERE dedupe_hash IN ({placeholders})", hashes)
+        return {row[0] for row in cur.fetchall()}
+    finally:
+        conn.close()

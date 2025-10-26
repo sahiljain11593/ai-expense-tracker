@@ -3394,6 +3394,7 @@ def main() -> None:
                 with st.form(f"dup_form_{file_key}"):
                     # Optional: select all toggle inside the form
                     select_all = st.checkbox("Select all", key=f"select_all_{file_key}")
+                    allow_dupes = st.toggle("Allow importing flagged duplicates", value=True, help="When on, selected items are inserted even if they already exist.")
                     
                     for i, (dedupe_hash, group) in enumerate(duplicates.items(), 1):
                         st.write(f"**Group {i}** ({len(group)} transactions):")
@@ -3404,7 +3405,21 @@ def main() -> None:
                             
                             with col1:
                                 currency_symbol = "¥"
-                                st.write(f"  • Row {tx['row']}: {tx['date']} | {tx['description']} | {currency_symbol}{tx['amount']:.2f}")
+                                # Badge if exists already
+                                try:
+                                    from data_store import get_existing_dedupe_hashes, compute_dedupe_hash
+                                    dh = compute_dedupe_hash(str(tx['date']), str(tx['description']), float(tx['amount']))
+                                    existing = st.session_state.get(f"existing_hashes_{file_key}")
+                                    if existing is None:
+                                        # Build once per render
+                                        all_hashes = [compute_dedupe_hash(str(t['date']), str(t['description']), float(t['amount'])) for g in duplicates.values() for t in g]
+                                        existing = get_existing_dedupe_hashes(all_hashes)
+                                        st.session_state[f"existing_hashes_{file_key}"] = existing
+                                    badge = "  
+                                    ✅ Already saved" if dh in existing else ""
+                                except Exception:
+                                    badge = ""
+                                st.write(f"  • Row {tx['row']}: {tx['date']} | {tx['description']} | {currency_symbol}{tx['amount']:.2f}{badge}")
                             
                             with col2:
                                 tx_key = f"{file_key}_{i}_{j}_{tx['row']}"
@@ -3484,7 +3499,12 @@ def main() -> None:
                                     continue
                                 transactions_to_import.append(tx_data)
                             
-                            inserted, dupes, errors = insert_transactions(transactions_to_import, import_batch_id)
+                            # Allow intentional import of duplicates based on toggle
+                            inserted, dupes, errors = insert_transactions(
+                                transactions_to_import,
+                                import_batch_id,
+                                override_duplicates=bool(allow_dupes)
+                            )
                             if inserted > 0:
                                 st.success(f"✅ Successfully imported {inserted} transactions!")
                                 # Defer clearing widget state to next run; avoid modifying widget keys post-instantiation
