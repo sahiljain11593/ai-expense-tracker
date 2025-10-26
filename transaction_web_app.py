@@ -1543,7 +1543,9 @@ def main() -> None:
                                             col_d1, col_d2, col_d3 = st.columns([3, 1, 1])
                                             
                                             with col_d1:
-                                                st.write(f"• {discard['date']} | {discard['description']} | ${discard['amount']:.2f}")
+                                                # Fix currency display - show Yen instead of Dollar
+                                                currency_symbol = "¥" if discard['amount'] > 0 else "¥"
+                                                st.write(f"• {discard['date']} | {discard['description']} | {currency_symbol}{discard['amount']:.2f}")
                                                 st.caption(f"Reason: {discard['reason']} | Hash: {discard['dedupe_hash'][:16]}...")
                                             
                                             with col_d2:
@@ -1873,17 +1875,68 @@ def main() -> None:
                 if duplicates:
                     st.warning(f"⚠️ Found {len(duplicates)} potential duplicate groups in your CSV file")
                     
-                    with st.expander(f"View {len(duplicates)} Duplicate Groups", expanded=False):
+                    # Store duplicate info in session state for later use
+                    st.session_state['duplicate_groups'] = duplicates
+                    st.session_state['df_analysis'] = df_analysis
+                    
+                    with st.expander(f"View {len(duplicates)} Duplicate Groups", expanded=True):
                         for i, (dedupe_hash, group) in enumerate(duplicates.items(), 1):
                             st.write(f"**Group {i}** ({len(group)} transactions):")
                             
+                            # Show each transaction in the group
                             for j, tx in enumerate(group):
-                                st.write(f"  • Row {tx['row']}: {tx['date']} | {tx['description']} | ${tx['amount']:.2f}")
+                                col1, col2, col3, col4 = st.columns([4, 1, 1, 1])
+                                
+                                with col1:
+                                    # Fix currency display - show Yen instead of Dollar
+                                    currency_symbol = "¥" if tx['amount'] > 0 else "¥"
+                                    st.write(f"  • Row {tx['row']}: {tx['date']} | {tx['description']} | {currency_symbol}{tx['amount']:.2f}")
+                                
+                                with col2:
+                                    if st.button("Import", key=f"import_dup_{i}_{j}"):
+                                        # Import this specific transaction
+                                        try:
+                                            from data_store import insert_transactions
+                                            
+                                            # Get the full transaction data from the original dataframe
+                                            row_data = df_analysis.iloc[tx['row'] - 1].to_dict()
+                                            
+                                            # Prepare transaction data
+                                            tx_data = {
+                                                'date': str(row_data.get('date', '')),
+                                                'description': str(row_data.get('description', '')),
+                                                'original_description': str(row_data.get('original_description', '')),
+                                                'amount': float(row_data.get('amount', 0)),
+                                                'currency': str(row_data.get('currency', 'JPY')),
+                                                'fx_rate': float(row_data.get('fx_rate', 1.0)),
+                                                'amount_jpy': float(row_data.get('amount_jpy', row_data.get('amount', 0))),
+                                                'category': str(row_data.get('category', '')),
+                                                'subcategory': str(row_data.get('subcategory', '')),
+                                                'transaction_type': str(row_data.get('transaction_type', 'Expense'))
+                                            }
+                                            
+                                            # Insert the transaction
+                                            inserted, dupes, errors = insert_transactions([tx_data])
+                                            
+                                            if inserted > 0:
+                                                st.success(f"✅ Imported transaction from row {tx['row']}")
+                                                st.rerun()
+                                            else:
+                                                st.error("❌ Failed to import transaction")
+                                        except Exception as e:
+                                            st.error(f"❌ Error importing: {e}")
+                                
+                                with col3:
+                                    if st.button("Skip", key=f"skip_dup_{i}_{j}"):
+                                        st.info(f"⏭️ Skipped transaction from row {tx['row']}")
+                                
+                                with col4:
+                                    st.caption("Duplicate")
                             
                             st.caption(f"   Hash: {dedupe_hash[:16]}...")
                             st.divider()
                     
-                    st.info(f"💡 These {sum(len(group) - 1 for group in duplicates.values())} transactions will be skipped during import to prevent duplicates.")
+                    st.info(f"💡 You can individually import or skip each transaction above. {sum(len(group) - 1 for group in duplicates.values())} transactions will be skipped by default.")
                 else:
                     st.success("✅ No duplicate transactions found in your CSV file")
                     
