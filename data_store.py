@@ -494,26 +494,27 @@ def insert_transactions(
                 dupes += 1
                 dupe_hashes.append(dedupe_hash)
                 
-                # Track discarded duplicate
-                import json
-                cur.execute(
-                    """
-                    INSERT INTO discarded_duplicates (
-                        import_batch_id, date, description, amount, dedupe_hash,
-                        reason, discarded_at, original_data
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        import_batch_id,
-                        date_str,
-                        r.get("description"),
-                        float(r.get("amount", 0.0)),
-                        dedupe_hash,
-                        "exact_duplicate",
-                        datetime.utcnow().isoformat(timespec="seconds"),
-                        json.dumps(r)
+                # Track discarded duplicate only when we have a valid import batch
+                if import_batch_id is not None:
+                    import json
+                    cur.execute(
+                        """
+                        INSERT INTO discarded_duplicates (
+                            import_batch_id, date, description, amount, dedupe_hash,
+                            reason, discarded_at, original_data
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (
+                            import_batch_id,
+                            date_str,
+                            r.get("description"),
+                            float(r.get("amount", 0.0)),
+                            dedupe_hash,
+                            "exact_duplicate",
+                            datetime.utcnow().isoformat(timespec="seconds"),
+                            json.dumps(r)
+                        )
                     )
-                )
 
         conn.commit()
         return inserted, dupes, dupe_hashes
@@ -743,7 +744,7 @@ def find_potential_duplicates_fuzzy(date: str, description: str, amount: float, 
         List of potential duplicate transaction dicts with similarity scores
     """
     from difflib import SequenceMatcher
-    from datetime import datetime, timedelta as dt, timedelta
+    from datetime import datetime as dtmod, timedelta as dt_timedelta
     
     settings = get_dedupe_settings(db_path)
     threshold = settings['similarity_threshold']
@@ -761,9 +762,9 @@ def find_potential_duplicates_fuzzy(date: str, description: str, amount: float, 
         else:
             # Calculate date range
             try:
-                base_date = dt.strptime(date, '%Y-%m-%d')
-                start_date = (base_date - timedelta(days=date_range)).strftime('%Y-%m-%d')
-                end_date = (base_date + timedelta(days=date_range)).strftime('%Y-%m-%d')
+                base_date = dtmod.strptime(date, '%Y-%m-%d')
+                start_date = (base_date - dt_timedelta(days=date_range)).strftime('%Y-%m-%d')
+                end_date = (base_date + dt_timedelta(days=date_range)).strftime('%Y-%m-%d')
                 date_query = "date BETWEEN ? AND ?"
                 date_params = [start_date, end_date]
             except:
@@ -777,8 +778,10 @@ def find_potential_duplicates_fuzzy(date: str, description: str, amount: float, 
         else:
             lower = amount * (1 - amount_tol)
             upper = amount * (1 + amount_tol)
+            # Ensure correct ordering for negative amounts as well
+            lo, hi = (lower, upper) if lower <= upper else (upper, lower)
             amount_query = "amount BETWEEN ? AND ?"
-            amount_params = [lower, upper]
+            amount_params = [lo, hi]
         
         # Build full query
         query = f'''

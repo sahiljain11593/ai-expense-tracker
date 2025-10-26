@@ -98,6 +98,15 @@ def render_duplicate_analysis():
         return
 
     with st.expander(f"View {len(duplicates)} Duplicate Groups", expanded=True):
+        # Clear previous selection widget states safely BEFORE rendering widgets
+        clear_key = f'clear_dup_selections_{file_key}'
+        if st.session_state.get(clear_key):
+            keys_to_clear = [k for k in st.session_state.keys() if k.startswith(f"dup_select_{file_key}_")]
+            for k in keys_to_clear:
+                st.session_state.pop(k, None)
+            st.session_state.pop(f"dup_select_all_{file_key}", None)
+            st.session_state[clear_key] = False
+
         with st.form(f"dup_form_{file_key}"):
             select_all = st.checkbox("Select all", key=f"dup_select_all_{file_key}")
 
@@ -159,6 +168,9 @@ def render_duplicate_analysis():
                     inserted, dupes, errors = insert_transactions(transactions_to_import, import_batch_id)
                     if inserted:
                         st.success(f"Imported {inserted} transactions (skipped {dupes} duplicates).")
+                        # Defer clearing widget state to next run to avoid mutation-after-instantiation errors
+                        st.session_state[f'clear_dup_selections_{file_key}'] = True
+                        st.rerun()
                     else:
                         st.error("No transactions were imported.")
                 except Exception as e:

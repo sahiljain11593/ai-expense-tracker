@@ -3381,6 +3381,15 @@ def main() -> None:
             st.write("✅ Add/save them to database")
             
             with st.expander(f"View {len(duplicates)} Duplicate Groups", expanded=True):
+                # Clear previous selection widget states safely BEFORE rendering widgets
+                clear_key = f'clear_dup_selections_{file_key}'
+                if st.session_state.get(clear_key):
+                    keys_to_clear = [k for k in st.session_state.keys() if k.startswith(f"select_{file_key}_")]
+                    for k in keys_to_clear:
+                        st.session_state.pop(k, None)
+                    st.session_state.pop(f"select_all_{file_key}", None)
+                    st.session_state[clear_key] = False
+
                 # Use a form so checkbox changes do NOT trigger reruns; only the submit does
                 with st.form(f"dup_form_{file_key}"):
                     # Optional: select all toggle inside the form
@@ -3478,10 +3487,9 @@ def main() -> None:
                             inserted, dupes, errors = insert_transactions(transactions_to_import, import_batch_id)
                             if inserted > 0:
                                 st.success(f"✅ Successfully imported {inserted} transactions!")
-                                # Clear selections
-                                for tx_key in selected_tx_keys:
-                                    st.session_state[f"select_{tx_key}"] = False
-                                st.session_state[f"select_all_{file_key}"] = False
+                                # Defer clearing widget state to next run; avoid modifying widget keys post-instantiation
+                                st.session_state[f'clear_dup_selections_{file_key}'] = True
+                                st.rerun()
                             else:
                                 st.error("❌ No transactions were imported")
                         except Exception as e:
