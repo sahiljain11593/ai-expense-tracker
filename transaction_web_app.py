@@ -1891,6 +1891,15 @@ def main() -> None:
         st.session_state['csv_file_size'] = None
         st.session_state['csv_dataframe'] = None
         
+        # Clear any previous duplicate analysis state to prevent conflicts
+        keys_to_remove = []
+        for key in st.session_state.keys():
+            if key.startswith('duplicate_analysis_') or key.startswith('selected_duplicates_'):
+                keys_to_remove.append(key)
+        
+        for key in keys_to_remove:
+            del st.session_state[key]
+        
         # Check if we're in resume mode (df already created above)
         if not st.session_state.get('resume_mode', False):
             try:
@@ -1902,8 +1911,13 @@ def main() -> None:
                     st.session_state['csv_file_uploaded'] = True
                     st.session_state['csv_file_name'] = uploaded_file.name
                     st.session_state['csv_file_size'] = uploaded_file.size
-                    # Store dataframe for duplicate analysis
-                    st.session_state['csv_dataframe'] = df.to_dict('records')
+                    # Store dataframe for duplicate analysis with error handling
+                    try:
+                        st.session_state['csv_dataframe'] = df.to_dict('records')
+                    except Exception as e:
+                        st.error(f"Error storing CSV data for duplicate analysis: {e}")
+                        # Fallback: store as empty list
+                        st.session_state['csv_dataframe'] = []
                 else:
                     df = extract_transactions_from_image(uploaded_file)
             except Exception as e:
@@ -3274,10 +3288,14 @@ def main() -> None:
         st.caption(f"🔍 Debug: This section has been executed {st.session_state['duplicate_section_executed']} times")
         
         # Create a unique key for this file's duplicate analysis
-        # Safely handle None values
-        file_name = st.session_state.get('csv_file_name', 'unknown')
+        # Safely handle None values and sanitize file name
+        raw_file_name = st.session_state.get('csv_file_name', 'unknown')
         file_size = st.session_state.get('csv_file_size', 0)
-        file_key = f"duplicate_analysis_{file_name}_{file_size}"
+        
+        # Sanitize file name for session state key (remove special characters)
+        import re
+        sanitized_file_name = re.sub(r'[^a-zA-Z0-9_-]', '_', str(raw_file_name))
+        file_key = f"duplicate_analysis_{sanitized_file_name}_{file_size}"
         
         # Only run duplicate analysis if not already done for this specific file
         if file_key not in st.session_state or not st.session_state[file_key]:
@@ -3327,7 +3345,13 @@ def main() -> None:
                     
             except Exception as e:
                 st.error(f"Error analyzing duplicates: {e}")
+                # Clean up any partial state and mark as failed
                 st.session_state[file_key] = True
+                # Remove any partial analysis data
+                if f'{file_key}_groups' in st.session_state:
+                    del st.session_state[f'{file_key}_groups']
+                if f'{file_key}_df' in st.session_state:
+                    del st.session_state[f'{file_key}_df']
         
         # Show duplicate analysis UI (completely independent)
         if f'{file_key}_groups' in st.session_state and st.session_state[f'{file_key}_groups']:
