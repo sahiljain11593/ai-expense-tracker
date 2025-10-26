@@ -3381,93 +3381,83 @@ def main() -> None:
             st.write("✅ Add/save them to database")
             
             with st.expander(f"View {len(duplicates)} Duplicate Groups", expanded=True):
-                # Initialize session state for selected transactions with file-specific key
-                selection_key = f'selected_duplicates_{file_key}'
-                if selection_key not in st.session_state:
-                    st.session_state[selection_key] = set()
-                
-                for i, (dedupe_hash, group) in enumerate(duplicates.items(), 1):
-                    st.write(f"**Group {i}** ({len(group)} transactions):")
+                # Use a form so checkbox changes do NOT trigger reruns; only the submit does
+                with st.form(f"dup_form_{file_key}"):
+                    # Optional: select all toggle inside the form
+                    select_all = st.checkbox("Select all", key=f"select_all_{file_key}")
                     
-                    # Show each transaction in the group
-                    for j, tx in enumerate(group):
-                        col1, col2, col3, col4 = st.columns([4, 1, 1, 1])
+                    for i, (dedupe_hash, group) in enumerate(duplicates.items(), 1):
+                        st.write(f"**Group {i}** ({len(group)} transactions):")
                         
-                        with col1:
-                            # Fix currency display - show Yen instead of Dollar
-                            currency_symbol = "¥" if tx['amount'] > 0 else "¥"
-                            st.write(f"  • Row {tx['row']}: {tx['date']} | {tx['description']} | {currency_symbol}{tx['amount']:.2f}")
-                        
-                        with col2:
-                            # Checkbox for selection - completely independent
-                            tx_key = f"{file_key}_{i}_{j}_{tx['row']}"
-                            is_selected = st.checkbox("Select", key=f"select_{tx_key}", value=tx_key in st.session_state[selection_key])
+                        # Show each transaction in the group
+                        for j, tx in enumerate(group):
+                            col1, col2, col3, col4 = st.columns([4, 1, 1, 1])
                             
-                            if is_selected:
-                                st.session_state[selection_key].add(tx_key)
-                            else:
-                                st.session_state[selection_key].discard(tx_key)
+                            with col1:
+                                currency_symbol = "¥"
+                                st.write(f"  • Row {tx['row']}: {tx['date']} | {tx['description']} | {currency_symbol}{tx['amount']:.2f}")
+                            
+                            with col2:
+                                tx_key = f"{file_key}_{i}_{j}_{tx['row']}"
+                                # Checkbox state will be read on submit; no side-effects here
+                                default_checked = bool(select_all)
+                                st.checkbox("Select", key=f"select_{tx_key}", value=default_checked)
+                            
+                            with col3:
+                                st.caption("Duplicate")
+                            
+                            with col4:
+                                st.caption("Group " + str(i))
                         
-                        with col3:
-                            st.caption("Duplicate")
-                        
-                        with col4:
-                            st.caption("Group " + str(i))
+                        st.caption(f"   Hash: {dedupe_hash[:16]}...")
+                        st.divider()
                     
-                    st.caption(f"   Hash: {dedupe_hash[:16]}...")
-                    st.divider()
-                
-                # Bulk import section - completely independent
-                st.divider()
-                st.subheader("📥 Bulk Import Selected Transactions")
-                
-                selected_count = len(st.session_state[selection_key])
-                st.write(f"**Selected {selected_count} transactions for import**")
-                
-                col_bulk1, col_bulk2, col_bulk3 = st.columns([1, 1, 1])
-                
-                with col_bulk1:
-                    if st.button("Import Selected", type="primary", disabled=selected_count == 0, key=f"import_{file_key}"):
-                        # Import all selected transactions - completely independent
+                    # Bulk import submit
+                    st.subheader("📥 Bulk Import Selected Transactions")
+                    submitted = st.form_submit_button("Import Selected", type="primary")
+                    
+                    if submitted:
                         try:
                             from data_store import insert_transactions, create_import_record
+                            
+                            # Build selected keys from checkbox states
+                            selected_tx_keys = []
+                            for i, group in enumerate(duplicates.values(), 1):
+                                for j, tx in enumerate(group):
+                                    tx_key = f"{file_key}_{i}_{j}_{tx['row']}"
+                                    if st.session_state.get(f"select_{tx_key}", False):
+                                        selected_tx_keys.append(tx_key)
+                            
+                            selected_count = len(selected_tx_keys)
+                            if selected_count == 0:
+                                st.warning("No transactions selected.")
+                                st.stop()
                             
                             # Create import record
                             safe_file_name = st.session_state.get('csv_file_name', 'unknown_file')
                             import_batch_id = create_import_record(f"{safe_file_name}_duplicates", selected_count)
                             
                             # Prepare selected transactions for import
-                            transactions_to_import = []
-                            
-                            # Get dataframe from session state
                             csv_data = st.session_state.get('csv_dataframe', [])
                             if not csv_data:
                                 st.error("❌ No CSV data available for import")
-                                return
-                            
+                                st.stop()
                             try:
                                 df_analysis = pd.DataFrame(csv_data)
                             except Exception as e:
                                 st.error(f"❌ Error creating dataframe from CSV data: {e}")
-                                return
+                                st.stop()
                             
-                            for tx_key in st.session_state[selection_key]:
-                                # Parse the key to get group and transaction info
+                            transactions_to_import = []
+                            for tx_key in selected_tx_keys:
                                 parts = tx_key.split('_')
-                                row_num = int(parts[-1]) - 1  # Last part is row number
-                                
-                                # Validate row number and get transaction data
+                                row_num = int(parts[-1]) - 1
                                 if row_num < 0 or row_num >= len(df_analysis):
-                                    st.error(f"❌ Invalid row number {row_num} for transaction {tx_key}")
                                     continue
-                                
                                 try:
                                     row_data = df_analysis.iloc[row_num].to_dict()
-                                except Exception as e:
-                                    st.error(f"❌ Error accessing row {row_num}: {e}")
+                                except Exception:
                                     continue
-                                
-                                # Prepare transaction data with error handling
                                 try:
                                     tx_data = {
                                         'date': str(row_data.get('date', '')),
@@ -3481,39 +3471,21 @@ def main() -> None:
                                         'subcategory': str(row_data.get('subcategory', '')),
                                         'transaction_type': str(row_data.get('transaction_type', 'Expense'))
                                     }
-                                except Exception as e:
-                                    st.error(f"❌ Error preparing transaction data for row {row_num}: {e}")
+                                except Exception:
                                     continue
                                 transactions_to_import.append(tx_data)
                             
-                            # Insert all selected transactions
                             inserted, dupes, errors = insert_transactions(transactions_to_import, import_batch_id)
-                            
                             if inserted > 0:
                                 st.success(f"✅ Successfully imported {inserted} transactions!")
-                                st.session_state[selection_key] = set()  # Clear selection
-                                # Don't use st.rerun() - let the UI update naturally
+                                # Clear selections
+                                for tx_key in selected_tx_keys:
+                                    st.session_state[f"select_{tx_key}"] = False
+                                st.session_state[f"select_all_{file_key}"] = False
                             else:
                                 st.error("❌ No transactions were imported")
-                                
                         except Exception as e:
                             st.error(f"❌ Error importing transactions: {e}")
-                
-                with col_bulk2:
-                    if st.button("Select All", disabled=selected_count == len([tx for group in duplicates.values() for tx in group]), key=f"select_all_{file_key}"):
-                        # Select all transactions
-                        all_tx_keys = []
-                        for i, group in enumerate(duplicates.values(), 1):
-                            for j, tx in enumerate(group):
-                                tx_key = f"{file_key}_{i}_{j}_{tx['row']}"
-                                all_tx_keys.append(tx_key)
-                        st.session_state[selection_key] = set(all_tx_keys)
-                        # Don't use st.rerun() - let the UI update naturally
-                
-                with col_bulk3:
-                    if st.button("Clear Selection", disabled=selected_count == 0, key=f"clear_{file_key}"):
-                        st.session_state[selection_key] = set()
-                        # Don't use st.rerun() - let the UI update naturally
             
             st.info(f"💡 **Independent Operation:** This section runs completely separately from the main processing. {sum(len(group) - 1 for group in duplicates.values())} transactions will be skipped by default.")
 
