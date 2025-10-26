@@ -3238,11 +3238,17 @@ def main() -> None:
     # INDEPENDENT DUPLICATE ANALYSIS SECTION - COMPLETELY SEPARATE FROM MAIN PROCESSING
     # ========================================================================
     
+    # Debug: Track when this section is executed
+    if 'duplicate_section_executed' not in st.session_state:
+        st.session_state['duplicate_section_executed'] = 0
+    st.session_state['duplicate_section_executed'] += 1
+    
     # Only show duplicate analysis if we have a CSV file and it's not resume mode
     if 'uploaded_file' in locals() and uploaded_file and uploaded_file.type == "text/csv" and not st.session_state.get('resume_mode', False):
         st.divider()
         st.subheader("🔍 Duplicate Analysis & Selective Import")
         st.caption("This section is completely independent from the main processing flow")
+        st.caption(f"🔍 Debug: This section has been executed {st.session_state['duplicate_section_executed']} times")
         
         # Create a unique key for this file's duplicate analysis
         file_key = f"duplicate_analysis_{uploaded_file.name}_{uploaded_file.size}"
@@ -3329,6 +3335,15 @@ def main() -> None:
                                 st.session_state[selection_key].add(tx_key)
                             else:
                                 st.session_state[selection_key].discard(tx_key)
+                            
+                            # Debug: Show if this checkbox change triggered processing
+                            if 'last_checkbox_change' not in st.session_state:
+                                st.session_state['last_checkbox_change'] = None
+                            
+                            if st.session_state['last_checkbox_change'] != tx_key:
+                                st.session_state['last_checkbox_change'] = tx_key
+                                # This is just for debugging - will be removed
+                                st.caption("🔄 Checkbox changed")
                         
                         with col3:
                             st.caption("Duplicate")
@@ -3389,7 +3404,7 @@ def main() -> None:
                             if inserted > 0:
                                 st.success(f"✅ Successfully imported {inserted} transactions!")
                                 st.session_state[selection_key] = set()  # Clear selection
-                                st.rerun()
+                                # Don't use st.rerun() - let the UI update naturally
                             else:
                                 st.error("❌ No transactions were imported")
                                 
@@ -3405,12 +3420,12 @@ def main() -> None:
                                 tx_key = f"{file_key}_{i}_{j}_{tx['row']}"
                                 all_tx_keys.append(tx_key)
                         st.session_state[selection_key] = set(all_tx_keys)
-                        st.rerun()
+                        # Don't use st.rerun() - let the UI update naturally
                 
                 with col_bulk3:
                     if st.button("Clear Selection", disabled=selected_count == 0, key=f"clear_{file_key}"):
                         st.session_state[selection_key] = set()
-                        st.rerun()
+                        # Don't use st.rerun() - let the UI update naturally
             
             st.info(f"💡 **Independent Operation:** This section runs completely separately from the main processing. {sum(len(group) - 1 for group in duplicates.values())} transactions will be skipped by default.")
 
