@@ -1,0 +1,92 @@
+{
+  "\u30b9\u30fc\u30d1\u30fc\u30de\u30fc\u30b1\u30c3\u30c8": {
+    "category": "Food",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.897684"
+  },
+  "\u30a4\u30aa\u30f3": {
+    "category": "Food",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.897862"
+  },
+  "\u30bf\u30af\u30b7\u30fc": {
+    "category": "Transportation",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.898685"
+  },
+  "\u30d5\u30a1\u30df\u30ea\u30fc\u30de\u30fc\u30c8": {
+    "category": "Food",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.899404"
+  },
+  "\u30d0\u30b9": {
+    "category": "Transportation",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.899912"
+  },
+  "amazon prime": {
+    "category": "Subscriptions",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.900416"
+  },
+  "\u6c34\u9053\u4ee3": {
+    "category": "Household",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.900924"
+  },
+  "\u30ed\u30fc\u30bd\u30f3": {
+    "category": "Food",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.901450"
+  },
+  "\u6771\u4eac\u30e1\u30c8\u30ed": {
+    "category": "Transportation",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.901977"
+  },
+  "netflix": {
+    "category": "Subscriptions",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.902799"
+  },
+  "\u30ac\u30b9\u4ee3": {
+    "category": "Household",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.903061"
+  },
+  "\u30bb\u30d6\u30f3-\u30a4\u30ec\u30d6\u30f3": {
+    "category": "Food",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.903310"
+  },
+  "jr\u6771\u65e5\u672c": {
+    "category": "Transportation",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.903587"
+  },
+  "apple music": {
+    "category": "Subscriptions",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.903856"
+  },
+  "\u96fb\u6c17\u4ee3": {
+    "category": "Household",
+    "confidence": 1.0,
+    "count": 1,
+    "last_used": "2025-10-06T12:22:22.904275"
+  }
+}
