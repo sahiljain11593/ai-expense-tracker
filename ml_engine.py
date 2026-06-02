@@ -252,54 +252,135 @@ class RuleBasedClassifier:
         return True
     
     def _extract_key_terms(self, description: str) -> List[str]:
-        """Extract meaningful terms from description."""
-        # Remove common words and numbers
-        words = re.findall(r'\b[a-z]{3,}\b', description)
-        
-        # Remove stop words
+        """Extract meaningful terms from description (supports English and Japanese)."""
+        # Extract English words (3+ letters)
+        en_words = re.findall(r'\b[a-z]{3,}\b', description)
+        # Extract Japanese character runs (katakana / hiragana / kanji, 2+ chars)
+        jp_words = re.findall(r'[\u3040-\u30FF\u4E00-\u9FFF]{2,}', description)
+
         stop_words = {'the', 'and', 'for', 'with', 'from', 'card', 'use', 'visa', 'domestic'}
-        key_terms = [w for w in words if w not in stop_words]
-        
-        return key_terms[:3]  # Top 3 key terms
-    
+        key_terms = [w for w in en_words if w not in stop_words] + jp_words
+
+        return key_terms[:4]
+
     def _initialize_rules(self) -> List[Dict]:
-        """Initialize default categorization rules."""
+        """Initialize default categorization rules aligned with the 10 app categories.
+
+        Categories: Food, Social Life, Subscriptions, Household, Transportation,
+                    Vacation, Health, Apparel, Grooming, Self-development
+        """
         return [
-            # Food & Dining
-            {'keywords': ['restaurant', 'cafe', 'coffee', 'starbucks', 'mcdonald'], 
-             'category': 'Food', 'subcategory': 'Restaurant'},
-            {'keywords': ['supermarket', 'grocery', 'mart', 'seven', 'eleven', 'lawson', 'family'], 
+            # ── Food ──
+            {'keywords': ['ローソン', 'lawson'], 'category': 'Food', 'subcategory': 'Groceries'},
+            {'keywords': ['セブンイレブン', '7-eleven'], 'category': 'Food', 'subcategory': 'Groceries'},
+            {'keywords': ['ファミリーマート', 'familymart'], 'category': 'Food', 'subcategory': 'Groceries'},
+            {'keywords': ['スーパー', 'supermarket', 'grocery', 'イオン', 'aeon', 'イトーヨーカドー',
+                          '西友', 'seiyu', 'ライフ', 'マルエツ', 'サミット', 'オーケー', 'コストコ',
+                          '業務スーパー'],
              'category': 'Food', 'subcategory': 'Groceries'},
-            
-            # Transportation
-            {'keywords': ['uber', 'taxi', 'grab', 'transport', 'railway', 'train'], 
-             'category': 'Transportation', 'subcategory': 'Public Transport'},
-            {'keywords': ['parking', 'toll', 'petrol', 'gas', 'fuel'], 
-             'category': 'Transportation', 'subcategory': 'Auto'},
-            
-            # Shopping
-            {'keywords': ['amazon', 'shop', 'store', 'mall', 'retail'], 
-             'category': 'Shopping', 'subcategory': 'General'},
-            {'keywords': ['uniqlo', 'zara', 'nike', 'fashion', 'clothing'], 
-             'category': 'Shopping', 'subcategory': 'Clothing'},
-            
-            # Entertainment
-            {'keywords': ['netflix', 'spotify', 'cinema', 'movie', 'theater'], 
-             'category': 'Entertainment', 'subcategory': 'Streaming'},
-            {'keywords': ['gym', 'fitness', 'sport', 'club'], 
-             'category': 'Entertainment', 'subcategory': 'Recreation'},
-            
-            # Bills & Utilities
-            {'keywords': ['electric', 'water', 'gas', 'utility', 'bill'], 
-             'category': 'Bills', 'subcategory': 'Utilities'},
-            {'keywords': ['phone', 'mobile', 'internet', 'broadband'], 
-             'category': 'Bills', 'subcategory': 'Phone'},
-            
-            # Healthcare
-            {'keywords': ['hospital', 'clinic', 'pharmacy', 'doctor', 'medical'], 
-             'category': 'Healthcare', 'subcategory': 'Medical'},
-            {'keywords': ['dentist', 'dental'], 
-             'category': 'Healthcare', 'subcategory': 'Dental'},
+            {'keywords': ['レストラン', 'restaurant', '居酒屋', 'izakaya', 'dinner'],
+             'category': 'Food', 'subcategory': 'Dinner/Eating Out'},
+            {'keywords': ['lunch', 'ランチ', '昼食', 'カフェ', 'cafe'],
+             'category': 'Food', 'subcategory': 'Lunch/Eating Out'},
+            {'keywords': ['スターバックス', 'starbucks', 'スタバ', 'タリーズ', 'tully', 'ドトール',
+                          'doutor', 'coffee', 'コーヒー'],
+             'category': 'Food', 'subcategory': 'Beverages A'},
+            {'keywords': ['マクドナルド', "mcdonald", 'モスバーガー', 'mos burger', 'すき家',
+                          'sukiya', '吉野家', 'yoshinoya', '松屋', 'matsuya', 'サイゼリヤ',
+                          'saizeriya', 'ガスト', 'gusto', 'ココイチ', 'coco'],
+             'category': 'Food', 'subcategory': 'Dinner/Eating Out'},
+            {'keywords': ['コンビニ', 'ミニストップ', 'ministop', 'デイリーヤマザキ', 'ポプラ'],
+             'category': 'Food', 'subcategory': 'Groceries'},
+
+            # ── Social Life ──
+            {'keywords': ['飲み会', 'drinking', 'パーティー', 'party', 'カラオケ', 'karaoke',
+                          'ボーリング', 'bowling'],
+             'category': 'Social Life', 'subcategory': 'Drinking'},
+            {'keywords': ['イベント', 'event', '会食', 'dining', '懇親会', 'networking',
+                          '歓迎会', 'welcome', '送別会', 'farewell'],
+             'category': 'Social Life', 'subcategory': 'Event'},
+
+            # ── Subscriptions ──
+            {'keywords': ['netflix', 'spotify', 'hulu', 'disney', 'youtube premium',
+                          'amazon prime', 'アマゾンプライム', 'icloud', 'apple music',
+                          'google one', 'subscription', 'membership', '月額', '年額',
+                          '年会費', 'annual fee'],
+             'category': 'Subscriptions', 'subcategory': 'Digital Services'},
+            {'keywords': ['楽天カード', '楽天ゴールドカード', 'rakuten card', 'credit card fee'],
+             'category': 'Subscriptions', 'subcategory': 'Credit Card'},
+
+            # ── Household ──
+            {'keywords': ['家賃', 'rent', '住宅', 'housing'],
+             'category': 'Household', 'subcategory': 'Rent'},
+            {'keywords': ['光熱費', 'utility', '電気', 'electric', 'tepco', '東京電力',
+                          'ガス', 'tokyo gas', '東京ガス', '水道', 'water', '東京都水道'],
+             'category': 'Household', 'subcategory': 'Utilities'},
+            {'keywords': ['ソフトバンク', 'softbank', 'ドコモ', 'docomo', 'エーユー',
+                          '楽天モバイル', 'rakuten mobile', 'phone', 'mobile', 'internet',
+                          'broadband'],
+             'category': 'Household', 'subcategory': 'Utilities'},
+            {'keywords': ['家具', 'furniture', 'ニトリ', 'nitori', 'イケア', 'ikea',
+                          'ホームセンター', 'home center'],
+             'category': 'Household', 'subcategory': 'Furniture'},
+            {'keywords': ['日用品', 'daily necessities', 'ダイソー', 'daiso', 'キャンドゥ',
+                          'セリア', '100 yen', 'cleaning'],
+             'category': 'Household', 'subcategory': 'Daily Necessities'},
+
+            # ── Transportation ──
+            {'keywords': ['電車', 'train', '地下鉄', 'subway', 'モノレール', 'monorail',
+                          'suica', 'スイカ', 'pasmo', 'パスモ', 'モバイルsuica', 'mobile suica'],
+             'category': 'Transportation', 'subcategory': 'Subway'},
+            {'keywords': ['タクシー', 'taxi', 'uber', 'grab', 'ライドシェア'],
+             'category': 'Transportation', 'subcategory': 'Taxi'},
+            {'keywords': ['ＥＴＣ', 'etc', '高速道路', 'highway', '駐車場', 'parking',
+                          'ガソリン', 'gasoline', '燃料', 'fuel', 'petrol'],
+             'category': 'Transportation', 'subcategory': 'ETC'},
+            {'keywords': ['バス', 'bus', '交通費', 'transport', 'モバイルパス', 'mobile pass'],
+             'category': 'Transportation', 'subcategory': 'Mobile Pass'},
+
+            # ── Vacation ──
+            {'keywords': ['旅行', 'travel', 'ホテル', 'hotel', '飛行機', 'flight',
+                          '新幹線', 'shinkansen', '観光', 'tourism', '温泉', 'onsen',
+                          'リゾート', 'resort', 'チケット', 'ticket', 'ツアー', 'tour',
+                          '宿泊', 'accommodation', 'airbnb', 'booking.com'],
+             'category': 'Vacation', 'subcategory': 'Travel'},
+
+            # ── Health ──
+            {'keywords': ['病院', 'hospital', 'クリニック', 'clinic', '歯科', 'dental',
+                          'dentist', '眼科', 'eye', '薬局', 'pharmacy', '薬', 'medicine',
+                          '診察', 'examination', '治療', 'treatment', 'medical', 'doctor'],
+             'category': 'Health', 'subcategory': 'Medical'},
+            {'keywords': ['フィットネス', 'fitness', 'ジム', 'gym', 'anytime fitness',
+                          'ヨガ', 'yoga', 'マッサージ', 'massage'],
+             'category': 'Health', 'subcategory': 'Fitness'},
+
+            # ── Apparel ──
+            {'keywords': ['服', 'clothing', '靴', 'shoes', 'バッグ', 'bag', 'アクセサリー',
+                          'accessory', '時計', 'watch', 'ユニクロ', 'uniqlo', 'ジーユー',
+                          'しまむら', 'shimamura', 'zara', 'h&m', 'gap', 'nike', 'adidas',
+                          'ナイキ', 'アディダス', 'ファッション', 'fashion', 'zozotown'],
+             'category': 'Apparel', 'subcategory': 'Clothing'},
+
+            # ── Grooming ──
+            {'keywords': ['美容', 'beauty', '化粧品', 'cosmetics', 'スキンケア', 'skincare',
+                          'ネイル', 'nail', 'エステ', 'esthetic', '理容', 'barber',
+                          '美容院', 'salon', '資生堂', 'shiseido', 'マツモトキヨシ',
+                          'matsumoto kiyoshi', 'ウエルシア', 'welcia', 'ツルハ', 'サンドラッグ',
+                          'ココカラファイン'],
+             'category': 'Grooming', 'subcategory': 'Personal Care'},
+
+            # ── Self-development ──
+            {'keywords': ['本', 'book', '雑誌', 'magazine', '新聞', 'newspaper',
+                          '講座', 'course', 'セミナー', 'seminar', 'ワークショップ', 'workshop',
+                          '資格', 'certification', '学習', 'learning', 'スキル', 'skill',
+                          'トレーニング', 'training', 'elearning', 'cinema', 'movie',
+                          '映画', 'theater'],
+             'category': 'Self-development', 'subcategory': 'Learning'},
+
+            # ── Online shopping (general) ──
+            {'keywords': ['amazon', 'アマゾン', '楽天', 'rakuten', 'ヤフー', 'yahoo',
+                          'メルカリ', 'mercari'],
+             'category': 'Food', 'subcategory': 'Groceries'},  # default; often re-categorized by user
         ]
 
 

@@ -523,8 +523,8 @@ def insert_transactions(
                         inserted += 1
                     except sqlite3.IntegrityError:
                         # If override also collides (extremely unlikely), count as duplicate
-                dupes += 1
-                dupe_hashes.append(dedupe_hash)
+                        dupes += 1
+                        dupe_hashes.append(dedupe_hash)
                 else:
                     dupes += 1
                     dupe_hashes.append(dedupe_hash)
@@ -1509,6 +1509,35 @@ def get_learning_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict:
             'total_patterns': total_patterns,
             'recent_learning': recent_learning
         }
+    finally:
+        conn.close()
+
+
+def load_merchant_learning(db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
+    """Load all merchant-category mappings from the database.
+
+    Returns a list of dicts with keys: merchant, category, subcategory, frequency, confidence_score.
+    """
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            "SELECT merchant, category, subcategory, frequency, confidence_score "
+            "FROM merchant_learning ORDER BY frequency DESC"
+        )
+        rows = cur.fetchall()
+        return [
+            {
+                "merchant": r[0],
+                "category": r[1],
+                "subcategory": r[2],
+                "frequency": r[3],
+                "confidence_score": r[4],
+            }
+            for r in rows
+        ]
+    except Exception:
+        return []
     finally:
         conn.close()
 

@@ -63,6 +63,7 @@ try:
         learn_from_categorization,
         get_learning_suggestions,
         get_learning_statistics,
+        load_merchant_learning,
     )
 except Exception as _e:
     # Allow the app to still render other parts; show a soft warning
@@ -87,6 +88,7 @@ except Exception as _e:
     learn_from_categorization = None  # type: ignore
     get_learning_suggestions = None  # type: ignore
     get_learning_statistics = None  # type: ignore
+    load_merchant_learning = None  # type: ignore
 
 # Auth UI (Firebase Google Sign-In)
 try:
@@ -130,20 +132,70 @@ except ImportError:
 
 
 class MerchantLearningSystem:
-    """Learning system that improves categorization based on user feedback."""
-    
+    """Learning system that improves categorization based on user feedback.
+
+    Loads previously-learned merchant-category mappings from the SQLite database
+    at startup so knowledge persists across sessions, and writes corrections back
+    to the database on every user feedback event.
+    """
+
     def __init__(self):
-        self.merchant_categories = {}  # merchant -> category mapping
-        self.merchant_patterns = {}    # merchant patterns -> category mapping
-        self.user_corrections = []     # track user corrections for analysis
-        self.confidence_scores = {}    # confidence level for each merchant
-    
+        self.merchant_categories: dict[str, dict[str, int]] = {}
+        self.merchant_patterns: dict = {}
+        self.user_corrections: list[dict] = []
+        self.confidence_scores: dict[str, dict[str, float]] = {}
+        # Load persisted learning from database
+        self._load_from_db()
+
+    # ── persistence helpers ──────────────────────────────────────────
+
+    def _load_from_db(self):
+        """Populate in-memory merchant mappings from the merchant_learning table."""
+        if load_merchant_learning is None:
+            return
+        try:
+            rows = load_merchant_learning()
+            for r in rows:
+                merchant = r["merchant"]
+                category = r["category"]
+                freq = r.get("frequency", 1)
+                conf = r.get("confidence_score", 0.5)
+                if merchant not in self.merchant_categories:
+                    self.merchant_categories[merchant] = {}
+                self.merchant_categories[merchant][category] = (
+                    self.merchant_categories[merchant].get(category, 0) + freq
+                )
+                if merchant not in self.confidence_scores:
+                    self.confidence_scores[merchant] = {}
+                self.confidence_scores[merchant][category] = max(
+                    self.confidence_scores[merchant].get(category, 0.0), conf
+                )
+        except Exception:
+            pass  # Gracefully continue without DB data
+
+    def _persist_correction(self, description: str, category: str, subcategory: str = "",
+                            amount: float = None, date: str = None):
+        """Write a single correction to the database."""
+        if learn_from_categorization is None:
+            return
+        try:
+            learn_from_categorization(
+                description=description,
+                category=category,
+                subcategory=subcategory,
+                amount=amount,
+                date=date,
+            )
+        except Exception:
+            pass  # Non-critical; in-memory learning still active
+
+    # ── public API ───────────────────────────────────────────────────
+
     def learn_from_user_feedback(self, transaction_id: str, old_category: str, new_category: str, transaction_data: dict):
         """Learn from user corrections to improve future categorizations."""
         merchant = self._extract_merchant(transaction_data['description'])
         original_desc = transaction_data.get('original_description', '')
-        
-        # Store the correction
+
         correction = {
             'transaction_id': transaction_id,
             'merchant': merchant,
@@ -151,101 +203,102 @@ class MerchantLearningSystem:
             'new_category': new_category,
             'description': transaction_data['description'],
             'original_description': original_desc,
-            'amount': transaction_data['amount'],
+            'amount': transaction_data.get('amount'),
             'timestamp': pd.Timestamp.now()
         }
         self.user_corrections.append(correction)
-        
-        # Update merchant category mapping
+
+        # Update in-memory merchant category mapping
         if merchant not in self.merchant_categories:
             self.merchant_categories[merchant] = {}
-        
         if new_category not in self.merchant_categories[merchant]:
             self.merchant_categories[merchant][new_category] = 0
-        
         self.merchant_categories[merchant][new_category] += 1
-        
-        # Update confidence scores
         self._update_confidence(merchant, new_category)
-    
+
+        # Persist to database
+        self._persist_correction(
+            description=transaction_data['description'],
+            category=new_category,
+            subcategory=transaction_data.get('subcategory', ''),
+            amount=transaction_data.get('amount'),
+            date=str(transaction_data.get('date', '')),
+        )
+
     def suggest_category(self, description: str, original_description: str = "") -> tuple:
         """Suggest category based on learned patterns."""
         merchant = self._extract_merchant(description)
-        
+
         if merchant in self.merchant_categories:
-            # Get the most frequently used category for this merchant
             categories = self.merchant_categories[merchant]
             if categories:
                 best_category = max(categories, key=categories.get)
                 confidence = self.confidence_scores.get(merchant, {}).get(best_category, 0.5)
                 return best_category, confidence
-        
+
+        # Also try matching on original (Japanese) description
+        if original_description:
+            merchant_orig = self._extract_merchant(original_description)
+            if merchant_orig in self.merchant_categories:
+                categories = self.merchant_categories[merchant_orig]
+                if categories:
+                    best_category = max(categories, key=categories.get)
+                    confidence = self.confidence_scores.get(merchant_orig, {}).get(best_category, 0.5)
+                    return best_category, confidence
+
         return "Uncategorised", 0.0
-    
+
     def predict_category(self, transaction_data: dict) -> tuple:
         """Predict category for a transaction with confidence and breakdown."""
         description = transaction_data.get('description', '')
         original_description = transaction_data.get('original_description', '')
-        
-        # Get suggestion from learning system
+
         suggested_category, confidence = self.suggest_category(description, original_description)
-        
-        # Create prediction breakdown
+
         breakdown = {
             'method': 'merchant_learning',
             'confidence': confidence,
             'merchant': self._extract_merchant(description),
             'suggested_category': suggested_category
         }
-        
+
         return suggested_category, confidence, breakdown
-    
+
+    # ── internal helpers ─────────────────────────────────────────────
+
     def _extract_merchant(self, description: str) -> str:
         """Extract merchant name from transaction description."""
-        # Remove common prefixes and suffixes
         description = description.lower()
-        
-        # Common patterns to remove
         patterns_to_remove = [
             r'visa\s+domestic\s+use\s+vs\s+',
             r'credit\s+card\s+',
             r'debit\s+card\s+',
             r'atm\s+',
             r'pos\s+',
-            r'\d+',  # Remove numbers
-            r'[^\w\s]',  # Remove special characters
+            r'\d+',
+            r'[^\w\s\u3040-\u30FF\u4E00-\u9FFF]',  # Keep Japanese characters
         ]
-        
         merchant = description
         for pattern in patterns_to_remove:
             merchant = re.sub(pattern, '', merchant)
-        
-        # Clean up whitespace
         merchant = ' '.join(merchant.split())
-        
         return merchant if merchant else "unknown"
-    
+
     def _update_confidence(self, merchant: str, category: str):
         """Update confidence score for merchant-category pair."""
         if merchant not in self.confidence_scores:
             self.confidence_scores[merchant] = {}
-        
         if category not in self.confidence_scores[merchant]:
             self.confidence_scores[merchant][category] = 0.5
-        
-        # Increase confidence with each correction
         current_confidence = self.confidence_scores[merchant][category]
         self.confidence_scores[merchant][category] = min(0.95, current_confidence + 0.1)
-    
+
     def get_learning_stats(self) -> dict:
         """Get statistics about the learning system."""
         total_corrections = len(self.user_corrections)
         unique_merchants = len(self.merchant_categories)
-        
-        # Calculate accuracy improvement
-        recent_corrections = [c for c in self.user_corrections 
-                            if (pd.Timestamp.now() - c['timestamp']).days < 30]
-        
+        recent_corrections = [c for c in self.user_corrections
+                              if (pd.Timestamp.now() - c['timestamp']).days < 30]
         return {
             'total_corrections': total_corrections,
             'unique_merchants': unique_merchants,
@@ -271,7 +324,7 @@ def extract_transactions_from_pdf(file_stream: io.BytesIO) -> pd.DataFrame:
             tables = page.extract_tables()
             for table in tables:
                 if len(table) > 1 and len(table[0]) >= 3:
-                    header = [h.strip().lower() for h in table[0]]
+                    header = [(h or "").strip().lower() for h in table[0]]
                     try:
                         date_idx = header.index("date")
                         desc_idx = header.index("description")
@@ -280,13 +333,14 @@ def extract_transactions_from_pdf(file_stream: io.BytesIO) -> pd.DataFrame:
                         continue
                     for row in table[1:]:
                         try:
-                            date = datetime.strptime(row[date_idx].strip(), "%d/%m/%Y")
+                            cell_date = row[date_idx] or ""
+                            date = datetime.strptime(cell_date.strip(), "%d/%m/%Y")
                         except Exception:
                             try:
-                                date = datetime.strptime(row[date_idx].strip(), "%Y-%m-%d")
+                                date = datetime.strptime(cell_date.strip(), "%Y-%m-%d")
                             except Exception:
                                 continue
-                        description = row[desc_idx].strip()
+                        description = (row[desc_idx] or "").strip()
                         try:
                             amount = float(row[amt_idx].replace(",", ""))
                         except Exception:
@@ -337,59 +391,314 @@ def extract_transactions_from_image(file_stream: io.BytesIO) -> pd.DataFrame:
     return df
 
 
+# ---------------------------------------------------------------------------
+# Gemini / OpenAI unified AI helper
+# ---------------------------------------------------------------------------
+GEMINI_PROVIDER = "gemini"  # sentinel value passed as base_url to select Gemini
 
-def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
-    """Translate Japanese text to English using OpenAI GPT-3.5-turbo for high accuracy."""
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"  # newest, free-tier, optimized for translation
+
+
+def _is_gemini(base_url: str | None) -> bool:
+    return base_url == GEMINI_PROVIDER
+
+
+def _default_key_for(base_url: str | None) -> str | None:
+    """Return the env-var-based default API key for the selected provider."""
+    if _is_gemini(base_url):
+        return os.getenv("GEMINI_API_KEY")
+    return os.getenv("OPENAI_API_KEY")
+
+
+def _default_model_for(base_url: str | None) -> str:
+    return DEFAULT_GEMINI_MODEL if _is_gemini(base_url) else DEFAULT_OPENAI_MODEL
+
+
+def _resolve_provider(api_key: str | None, model: str | None, base_url: str | None) -> tuple[str, str, str | None]:
+    """Resolve api_key and model with provider-aware defaults. Returns (api_key, model, base_url)."""
+    api_key = api_key or _default_key_for(base_url)
+    if not model or model == DEFAULT_OPENAI_MODEL and _is_gemini(base_url):
+        model = _default_model_for(base_url)
+    return api_key, model, base_url
+
+
+def _is_retryable_error(exc: Exception) -> bool:
+    """Detect transient errors worth retrying (rate limits, transient network issues)."""
+    msg = str(exc).lower()
+    if "429" in msg or "rate limit" in msg or "resource_exhausted" in msg or "quota" in msg:
+        return True
+    if "timeout" in msg or "connection" in msg or "503" in msg or "502" in msg or "unavailable" in msg:
+        return True
+    return False
+
+
+def _ai_generate(
+    messages: list[dict],
+    model: str,
+    api_key: str,
+    max_tokens: int = 1000,
+    temperature: float = 0.0,
+    base_url: str = None,
+    json_mode: bool = False,
+    max_retries: int = 3,
+) -> str:
+    """Call an AI model and return the response text.
+
+    Works with both OpenAI and Google Gemini (native SDK).
+    Pass base_url=GEMINI_PROVIDER to use Gemini, or None for OpenAI.
+    Set json_mode=True to force valid JSON output.
+
+    Includes exponential backoff retry for transient errors (429, 5xx, network).
+    """
+    import time
+    import random
+
+    api_key, model, base_url = _resolve_provider(api_key, model, base_url)
+    if not api_key:
+        provider = "Gemini" if _is_gemini(base_url) else "OpenAI"
+        raise RuntimeError(f"No {provider} API key available")
+
+    last_exc: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            if _is_gemini(base_url):
+                return _gemini_call(messages, model, api_key, max_tokens, temperature, json_mode)
+            return _openai_call(messages, model, api_key, max_tokens, temperature, json_mode)
+        except Exception as exc:  # noqa: BLE001 - we re-raise non-retryable below
+            last_exc = exc
+            if attempt == max_retries - 1 or not _is_retryable_error(exc):
+                raise
+            # Exponential backoff with jitter: 1s, 2s, 4s + up to 1s jitter
+            delay = (2 ** attempt) + random.random()
+            time.sleep(delay)
+
+    # Should be unreachable but keeps the type-checker happy
+    raise last_exc if last_exc else RuntimeError("AI generate failed without exception")
+
+
+def _gemini_call(
+    messages: list[dict],
+    model: str,
+    api_key: str,
+    max_tokens: int,
+    temperature: float,
+    json_mode: bool,
+) -> str:
+    """Single Gemini call (no retry). Handles thinking-budget and empty responses."""
+    from google import genai
+    from google.genai import types
+
+    client = genai.Client(api_key=api_key)
+
+    # Split system instruction from conversation messages
+    system_instruction = None
+    user_parts = []
+    for msg in messages:
+        if msg["role"] == "system":
+            system_instruction = msg["content"]
+        else:
+            user_parts.append(msg["content"])
+    prompt = user_parts[0] if len(user_parts) == 1 else "\n".join(user_parts)
+
+    # Gemini 2.5+ Flash defaults to "thinking" mode where reasoning tokens consume
+    # the same max_output_tokens budget. For deterministic structured tasks we
+    # disable thinking entirely, which both saves tokens and avoids empty
+    # responses where thinking ate the whole budget.
+    config_kwargs = dict(
+        system_instruction=system_instruction,
+        max_output_tokens=max_tokens,
+        temperature=temperature,
+    )
     try:
-        # Normalize half-width to full-width etc. to improve translation quality
+        config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+    except Exception:
+        # Older SDKs may not have ThinkingConfig; safe to skip
+        pass
+    if json_mode:
+        config_kwargs["response_mime_type"] = "application/json"
+
+    config = types.GenerateContentConfig(**config_kwargs)
+
+    response = client.models.generate_content(
+        model=model,
+        contents=prompt,
+        config=config,
+    )
+
+    text = response.text or ""
+    if not text:
+        finish = None
+        try:
+            if response.candidates:
+                finish = getattr(response.candidates[0], "finish_reason", None)
+        except Exception:
+            pass
+        raise RuntimeError(f"Gemini returned empty response (finish_reason={finish})")
+    return text.strip()
+
+
+def _openai_call(
+    messages: list[dict],
+    model: str,
+    api_key: str,
+    max_tokens: int,
+    temperature: float,
+    json_mode: bool,
+) -> str:
+    """Single OpenAI chat completion call (no retry)."""
+    import openai
+
+    client = openai.OpenAI(api_key=api_key)
+    kwargs = dict(
+        model=model,
+        messages=messages,
+        max_tokens=max_tokens,
+        temperature=temperature,
+    )
+    if json_mode:
+        kwargs["response_format"] = {"type": "json_object"}
+    response = client.chat.completions.create(**kwargs)
+    return response.choices[0].message.content.strip()
+
+
+def translate_japanese_to_english_ai(text: str, api_key: str = None, model: str = None, base_url: str = None) -> str:
+    """Translate a single Japanese text to English using OpenAI or Gemini."""
+    try:
         text_norm = normalize_japanese_text(text)
-        # Protect known merchant names with placeholders
         protected_text, placeholders = protect_known_merchants(text_norm)
-        import openai
-        
-        # Check if text contains Japanese characters
+
         if not protected_text or not any(ord(char) > 127 for char in protected_text):
-            return protected_text
-        
-        # If no API key provided, try to get from environment
+            return restore_known_merchants(protected_text, placeholders) if protected_text else text
+
+        api_key = api_key or _default_key_for(base_url)
+        model = model or _default_model_for(base_url)
+
         if not api_key:
-            api_key = os.getenv('OPENAI_API_KEY')
-        
-        if not api_key:
-            st.warning("No OpenAI API key found. Using free translation fallback.")
+            st.warning("No API key found. Using free translation fallback.")
             return translate_japanese_to_english_fallback(text)
-        
-        # Configure OpenAI client
-        client = openai.OpenAI(api_key=api_key)
-        
-        # Create translation prompt
-        prompt = f"""
-        Translate the following Japanese text to English. This is from a credit card statement, so maintain accuracy for financial terms and merchant names.
-        
-        Japanese text: {protected_text}
-        
-        English translation:"""
-        
-        # Get translation from GPT-3.5-turbo
-        response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+
+        translated = _ai_generate(
             messages=[
-                {"role": "system", "content": "You are a professional translator specializing in financial documents. Translate Japanese to English accurately, especially for merchant names and financial terms."},
-                {"role": "user", "content": prompt}
+                {"role": "system", "content": (
+                    "You translate abbreviated Japanese bank and credit-card statement "
+                    "descriptions into concise English. Input lines are NOT normal prose; "
+                    "they are short, abbreviated merchant/payee names from financial "
+                    "statements (e.g. 'ミゾノグチエキマエ' means 'Mizonokuchi Station'). "
+                    "Use your knowledge of real Japanese businesses to identify the "
+                    "actual merchant. Include the business type when helpful, "
+                    "e.g. 'Shoukoktei (Chinese Restaurant)' or 'Torikizoku (Izakaya)'. "
+                    "Return ONLY the English translation, nothing else. "
+                    "Keep merchant/brand names in their well-known English form "
+                    "(e.g. スタバ→Starbucks, マツキヨ→Matsumoto Kiyoshi)."
+                )},
+                {"role": "user", "content": protected_text}
             ],
-            max_tokens=100,
-            temperature=0.1  # Low temperature for consistent translations
+            model=model,
+            api_key=api_key,
+            max_tokens=120,
+            temperature=0.0,
+            base_url=base_url,
         )
-        
-        translated = response.choices[0].message.content.strip()
-        # Restore protected merchant names
+
         translated = restore_known_merchants(translated, placeholders)
         return translated
-        
+
     except Exception as e:
         st.warning(f"AI translation failed for '{text}': {e}")
-        # Fallback to free translation
         return translate_japanese_to_english_fallback(text)
+
+
+def translate_batch_ai(texts: list[str], api_key: str = None, batch_size: int = 25, model: str = None, base_url: str = None) -> dict[str, str]:
+    """Batch-translate a list of unique Japanese descriptions via AI (OpenAI or Gemini).
+
+    Returns a dict mapping each original text to its English translation.
+    Falls back to one-by-one free translation on failure.
+    """
+    import json as _json
+
+    api_key = api_key or _default_key_for(base_url)
+    model = model or _default_model_for(base_url)
+
+    results: dict[str, str] = {}
+
+    # Pre-process: normalise & protect merchants, skip non-Japanese.
+    # NB: We use INLINE protection in batch mode (real English brand names instead
+    # of [[BRAND_N]] placeholders) — placeholder tokens cause the model to copy
+    # translations across rows because every row looks like "[[BRAND_X]] LOCATION".
+    to_translate: list[tuple[str, str]] = []  # (original, protected_inline)
+    for text in texts:
+        text_norm = normalize_japanese_text(text)
+        protected = protect_known_merchants_inline(text_norm)
+        if not protected or not any(ord(c) > 127 for c in protected):
+            results[text] = protected if protected else text
+        else:
+            to_translate.append((text, protected))
+
+    if not to_translate or not api_key:
+        # Fall back to free translation for anything remaining
+        for original, _ in to_translate:
+            results[original] = translate_japanese_to_english_fallback(original)
+        return results
+
+    # Process in batches
+    for batch_start in range(0, len(to_translate), batch_size):
+        batch = to_translate[batch_start:batch_start + batch_size]
+        numbered_lines = "\n".join(
+            f"{i+1}. {item[1]}" for i, item in enumerate(batch)
+        )
+
+        try:
+            raw = _ai_generate(
+                messages=[
+                    {"role": "system", "content": (
+                        "You translate abbreviated Japanese bank and credit-card statement "
+                        "descriptions into concise English. Input lines are NOT normal prose; "
+                        "they are short, abbreviated merchant/payee names from financial "
+                        "statements (e.g. 'ミゾノグチエキマエ' means 'Mizonokuchi Station'). "
+                        "Use your knowledge of real Japanese businesses to identify the "
+                        "actual merchant. For example: ｼｮｳｺﾃｲ is a Chinese restaurant "
+                        "(小籠亭→Shoukoktei Restaurant), ﾄﾘｷｿﾞｸ is an izakaya chain "
+                        "(鳥貴族→Torikizoku Izakaya). "
+                        "Include the business type in your translation when helpful, "
+                        "e.g. 'Shoukoktei (Chinese Restaurant)' or 'Torikizoku (Izakaya)'. "
+                        "Keep well-known brand names in English form "
+                        "(e.g. スタバ→Starbucks, マツキヨ→Matsumoto Kiyoshi). "
+                        "Reply with a JSON object mapping each input number (as a string) "
+                        "to its English translation. Each translation MUST correspond to its "
+                        "OWN input — do not copy translations across inputs. Output schema: "
+                        "{\"1\": \"<english translation of input 1>\", \"2\": \"<english translation of input 2>\", ...}"
+                    )},
+                    {"role": "user", "content": numbered_lines}
+                ],
+                model=model,
+                api_key=api_key,
+                max_tokens=max(800, 80 * len(batch)),
+                temperature=0.0,
+                base_url=base_url,
+                json_mode=True,
+            )
+
+            # Strip markdown fences if model adds them
+            if raw.startswith("```"):
+                raw = re.sub(r"^```(?:json)?\s*", "", raw)
+                raw = re.sub(r"\s*```$", "", raw)
+            mapping = _json.loads(raw)
+
+            for i, (original, _protected) in enumerate(batch):
+                translated = mapping.get(str(i + 1), "") or ""
+                translated = translated.strip()
+                if translated:
+                    results[original] = translated
+                else:
+                    results[original] = translate_japanese_to_english_fallback(original)
+
+        except Exception as e:
+            st.warning(f"Batch translation failed (batch starting at {batch_start}): {e}. Falling back to free translation.")
+            for original, _ in batch:
+                results[original] = translate_japanese_to_english_fallback(original)
+
+    return results
 
 def translate_japanese_to_english_fallback(text: str) -> str:
     """Fallback translation using deep-translator when AI translation fails."""
@@ -401,17 +710,20 @@ def translate_japanese_to_english_fallback(text: str) -> str:
         from deep_translator import GoogleTranslator
         if protected_text and any(ord(char) > 127 for char in protected_text):
             translated = GoogleTranslator(source='ja', target='en').translate(protected_text)
+            if translated is None:
+                return restore_known_merchants(text, placeholders)
             translated = restore_known_merchants(translated, placeholders)
             return translated
-        return protected_text
+        # No Japanese characters left (all were known merchants) – restore placeholders
+        return restore_known_merchants(protected_text, placeholders) if protected_text else text
     except Exception as e:
         st.warning(f"Fallback translation failed for '{text}': {e}")
         return text
 
-def translate_japanese_to_english(text: str, mode: str = "Free Fallback", api_key: str = None) -> str:
+def translate_japanese_to_english(text: str, mode: str = "Free Fallback", api_key: str = None, model: str = "gpt-4o-mini", base_url: str = None) -> str:
     """Main translation function - handles different translation modes."""
-    if mode == "AI-Powered (GPT-3.5)":
-        return translate_japanese_to_english_ai(text, api_key)
+    if mode in ("AI-Powered (GPT-4o-mini)", "AI-Powered"):
+        return translate_japanese_to_english_ai(text, api_key, model=model, base_url=base_url)
     elif mode == "Free Fallback":
         return translate_japanese_to_english_fallback(text)
     else:  # No Translation
@@ -436,19 +748,81 @@ def protect_known_merchants(text: str):
     Returns (processed_text, placeholders_dict).
     """
     merchant_map = {
-        'ドンキホーテ': 'Don Quijote',
-        'ドン・キホーテ': 'Don Quijote',
+        # ── Convenience stores ──
         'ローソン': 'Lawson',
         'セブンイレブン': '7-Eleven',
         'ファミリーマート': 'FamilyMart',
+        'ミニストップ': 'Ministop',
+        'デイリーヤマザキ': 'Daily Yamazaki',
+        'ポプラ': 'Poplar',
+        # ── Supermarkets / general retail ──
         'イオン': 'AEON',
-        'ニトリ': 'Nitori',
+        'イトーヨーカドー': 'Ito-Yokado',
+        '西友': 'Seiyu',
+        'ライフ': 'LIFE Supermarket',
+        'マルエツ': 'Maruetsu',
+        'サミット': 'Summit Supermarket',
+        'オーケー': 'OK Store',
+        'コストコ': 'Costco',
+        '業務スーパー': 'Gyomu Super',
+        'ドンキホーテ': 'Don Quijote',
+        'ドン・キホーテ': 'Don Quijote',
+        'ダイソー': 'Daiso',
+        'キャンドゥ': 'Can Do',
+        'セリア': 'Seria',
+        # ── Drugstores ──
+        'マツモトキヨシ': 'Matsumoto Kiyoshi',
+        'マツキヨ': 'Matsumoto Kiyoshi',
+        'ウエルシア': 'Welcia',
+        'ツルハ': 'Tsuruha',
+        'サンドラッグ': 'Sundrug',
+        'ココカラファイン': 'Cocokara Fine',
+        # ── Fast food / cafes ──
         'マクドナルド': "McDonald's",
         'ケンタッキー': 'KFC',
         'スターバックス': 'Starbucks',
-        'イトーヨーカドー': 'Ito-Yokado',
-        '西友': 'Seiyu',
-        'ライフ': 'LIFE',
+        'スタバ': 'Starbucks',
+        'タリーズ': "Tully's Coffee",
+        'ドトール': 'Doutor Coffee',
+        'モスバーガー': 'Mos Burger',
+        'すき家': 'Sukiya',
+        '吉野家': 'Yoshinoya',
+        '松屋': 'Matsuya',
+        'サイゼリヤ': 'Saizeriya',
+        'ガスト': 'Gusto',
+        'ココイチ': 'CoCo Ichibanya',
+        # ── Home / electronics ──
+        'ニトリ': 'Nitori',
+        'ヤマダ電機': 'Yamada Denki',
+        'ビックカメラ': 'Bic Camera',
+        'ヨドバシ': 'Yodobashi Camera',
+        'ケーズデンキ': "K's Denki",
+        # ── Fashion ──
+        'ユニクロ': 'UNIQLO',
+        'ジーユー': 'GU',
+        'しまむら': 'Shimamura',
+        'ZOZOTOWN': 'ZOZOTOWN',
+        # ── Transport ──
+        'スイカ': 'Suica',
+        'パスモ': 'PASMO',
+        'モバイルSuica': 'Mobile Suica',
+        # ── Utilities / telecom ──
+        '東京電力': 'TEPCO',
+        '東京ガス': 'Tokyo Gas',
+        '東京都水道': 'Tokyo Waterworks',
+        'ソフトバンク': 'SoftBank',
+        'ドコモ': 'NTT Docomo',
+        'エーユー': 'au (KDDI)',
+        '楽天モバイル': 'Rakuten Mobile',
+        # ── Online / subscriptions ──
+        'アマゾン': 'Amazon',
+        '楽天': 'Rakuten',
+        'ヤフー': 'Yahoo Japan',
+        'メルカリ': 'Mercari',
+        # ── Credit card / payment terms ──
+        '年会費': 'Annual Fee',
+        '楽天カード': 'Rakuten Card',
+        '楽天ゴールドカード': 'Rakuten Gold Card',
     }
     placeholders = {}
     processed = text
@@ -462,8 +836,33 @@ def protect_known_merchants(text: str):
     return processed, placeholders
 
 
+def protect_known_merchants_inline(text: str) -> str:
+    """Like protect_known_merchants, but inline-replaces brands with their English form.
+
+    This is used in batch translation where placeholder tokens like [[BRAND_0]] can
+    confuse the model — it sees the same structural pattern across many rows and
+    starts copying translations from the first row. Using the English brand name
+    directly (e.g. "UNIQLO Shibuya") gives the model a real, distinct token to
+    work with for each row, eliminating that whole class of bug.
+
+    Returns the protected text only — no placeholders dict, since restoration is
+    a no-op when brands are already in English.
+    """
+    try:
+        # Reuse the same merchant_map by calling the placeholder version, then
+        # post-substituting placeholders with their English values.
+        protected, placeholders = protect_known_merchants(text)
+        for token, en in placeholders.items():
+            protected = protected.replace(token, en)
+        return protected
+    except Exception:
+        return text
+
+
 def restore_known_merchants(translated: str, placeholders: dict) -> str:
     try:
+        if translated is None:
+            return ""
         restored = translated
         for token, en in placeholders.items():
             restored = restored.replace(token, en)
@@ -493,7 +892,7 @@ def _replace_hyphen_between_katakana(s: str) -> str:
     except Exception:
         return s
 
-def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str = "Free Fallback", api_key: str = None) -> pd.DataFrame:
+def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str = "Free Fallback", api_key: str = None, ai_model: str = "gpt-4o-mini", ai_base_url: str = None) -> pd.DataFrame:
     """Extract transactions from a CSV file.
     
     This function reads CSV files and attempts to identify date, description, and amount columns.
@@ -575,24 +974,23 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
     progress_bar = st.progress(0)
     status_text = st.empty()
     
-    transactions = []
+    # ── Pass 1: parse rows (dates, amounts, descriptions) ──
+    parsed_rows: list[dict] = []
     total_rows = len(df)
     
     for idx, row in df.iterrows():
         try:
-            # Update progress
-            progress = (idx + 1) / total_rows
+            progress = (idx + 1) / total_rows * 0.4  # 0-40% for parsing
             progress_bar.progress(progress)
-            status_text.text(f"Processing row {idx + 1} of {total_rows} ({progress:.1%})")
+            status_text.text(f"Parsing row {idx + 1} of {total_rows}…")
             
             # Handle different date formats
             date_str = str(row[date_col]).strip()
             if pd.isna(date_str) or date_str == '':
                 continue
                 
-            # Try different date formats (including Japanese format)
             date = None
-            date_formats = ['%Y/%m/%d', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y', '%Y/%m/%d']
+            date_formats = ['%Y/%m/%d', '%Y-%m-%d', '%d/%m/%Y', '%m/%d/%Y', '%d-%m-%Y']
             for fmt in date_formats:
                 try:
                     date = datetime.strptime(date_str, fmt)
@@ -609,7 +1007,6 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
                 time_str = str(row[time_col]).strip()
                 if not pd.isna(time_str) and time_str != '':
                     try:
-                        # Try to parse time in various formats
                         time_formats = ['%H:%M:%S', '%H:%M', '%H.%M.%S', '%H.%M']
                         for fmt in time_formats:
                             try:
@@ -618,38 +1015,73 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
                                 break
                             except ValueError:
                                 continue
-                    except:
+                    except Exception:
                         pass
                 
-            # Get description and translate if it's Japanese
             description = str(row[desc_col]).strip()
             if pd.isna(description) or description == '':
                 continue
-            
-            # Translate Japanese description to English
-            original_description = description
-            description = translate_japanese_to_english(description, translation_mode, api_key)
                 
-            # Handle amount (could be positive or negative)
             amount_str = str(row[amount_col]).strip()
             if pd.isna(amount_str) or amount_str == '':
                 continue
                 
-            # Remove currency symbols, commas, and Japanese characters
             amount_str = re.sub(r'[^\d.-]', '', amount_str)
             amount = float(amount_str)
             
-            transactions.append({
+            parsed_rows.append({
                 "date": date,
                 "timestamp": timestamp,
-                "description": description,
-                "original_description": original_description,  # Keep original for reference
-                "amount": amount
+                "original_description": description,
+                "amount": amount,
             })
             
         except Exception as e:
             st.warning(f"Error processing row {idx + 1}: {row}. Error: {e}")
             continue
+    
+    # ── Pass 2: batch translate all unique descriptions ──
+    status_text.text("🌐 Translating descriptions…")
+    progress_bar.progress(0.45)
+    
+    unique_descs = list({r["original_description"] for r in parsed_rows})
+    
+    # Use translation cache from session state
+    if "translation_cache" not in st.session_state:
+        st.session_state["translation_cache"] = {}
+    cache: dict[str, str] = st.session_state["translation_cache"]
+    
+    # Split into cached and uncached
+    uncached = [d for d in unique_descs if d not in cache]
+    
+    if uncached and translation_mode in ("AI-Powered (GPT-4o-mini)", "AI-Powered") and api_key:
+        batch_results = translate_batch_ai(uncached, api_key, model=ai_model, base_url=ai_base_url)
+        cache.update(batch_results)
+    elif uncached and translation_mode == "Free Fallback":
+        for i, desc in enumerate(uncached):
+            cache[desc] = translate_japanese_to_english_fallback(desc)
+            if len(uncached) > 1:
+                progress_bar.progress(0.45 + 0.45 * (i + 1) / len(uncached))
+                status_text.text(f"Translating {i + 1}/{len(uncached)}…")
+    elif uncached and translation_mode == "No Translation":
+        for desc in uncached:
+            cache[desc] = desc
+    
+    progress_bar.progress(0.90)
+    status_text.text("Assembling results…")
+    
+    # ── Pass 3: assemble final transactions list ──
+    transactions = []
+    for r in parsed_rows:
+        original = r["original_description"]
+        translated = cache.get(original, original)
+        transactions.append({
+            "date": r["date"],
+            "timestamp": r["timestamp"],
+            "description": translated,
+            "original_description": original,
+            "amount": r["amount"],
+        })
     
     # Complete progress bar
     progress_bar.progress(1.0)
@@ -1099,11 +1531,137 @@ def detect_transaction_type(df: pd.DataFrame) -> pd.DataFrame:
     
     return df
 
+def categorise_transactions_ai(
+    df: pd.DataFrame,
+    api_key: str,
+    categories: list[str],
+    subcategories: dict | None = None,
+    batch_size: int = 30,
+    model: str | None = None,
+    base_url: str | None = None,
+) -> pd.DataFrame:
+    """Categorise transactions using AI (OpenAI or Gemini) for highest accuracy.
+
+    Sends batches of transactions (original Japanese + translated English) to the
+    model and asks it to pick the best category and subcategory from the provided
+    lists.  Falls back to rule-based categorisation on failure.
+    """
+    import json as _json
+
+    api_key = api_key or _default_key_for(base_url)
+    model = model or _default_model_for(base_url)
+    if not api_key:
+        st.warning("No API key – falling back to rule-based categorisation.")
+        return df  # caller should fall back
+
+    # Build a compact description of valid categories + subcategories for the prompt
+    cat_desc_parts: list[str] = []
+    for cat in categories:
+        subs = list((subcategories or {}).get(cat, {}).keys())
+        if subs:
+            cat_desc_parts.append(f"- {cat} (subcategories: {', '.join(subs)})")
+        else:
+            cat_desc_parts.append(f"- {cat}")
+    categories_text = "\n".join(cat_desc_parts)
+
+    df = df.copy()
+    result_categories: list[str] = ["Uncategorised"] * len(df)
+    result_subcategories: list[str] = [""] * len(df)
+    result_confidences: list[float] = [0.0] * len(df)
+
+    indices = list(range(len(df)))
+
+    for batch_start in range(0, len(indices), batch_size):
+        batch_idx = indices[batch_start:batch_start + batch_size]
+
+        lines: list[str] = []
+        for pos, i in enumerate(batch_idx, start=1):
+            row = df.iloc[i]
+            desc = row.get("description", "")
+            orig = row.get("original_description", "")
+            amt = row.get("amount", 0)
+            lines.append(f'{pos}. "{orig}" / "{desc}" / amount={amt}')
+
+        numbered_block = "\n".join(lines)
+
+        try:
+            raw = _ai_generate(
+                messages=[
+                    {"role": "system", "content": (
+                        "You categorise personal finance transactions from Japanese bank "
+                        "and credit-card statements.\n\n"
+                        "Each transaction has:\n"
+                        "- An original Japanese description (abbreviated merchant/payee name)\n"
+                        "- An English translation\n"
+                        "- An amount (negative = expense, positive = income)\n\n"
+                        "IMPORTANT: Use your knowledge of Japanese businesses to identify "
+                        "what each merchant actually is. Many entries are abbreviated names "
+                        "of real businesses in Japan. For example:\n"
+                        "- ｼｮｳｺﾃｲ is a Chinese restaurant (小籠亭)\n"
+                        "- ﾄﾘｷｿﾞｸ is Torikizoku (鳥貴族), an izakaya chain\n"
+                        "- ﾏﾂﾓﾄｷﾖｼ is Matsumoto Kiyoshi, a drugstore\n"
+                        "- ｲｵﾝ is AEON, a supermarket\n"
+                        "Identify the actual business and categorise based on what it is "
+                        "(restaurant → Food, drugstore → Grooming, etc.), not just the "
+                        "literal text translation.\n\n"
+                        f"VALID CATEGORIES:\n{categories_text}\n\n"
+                        "If no subcategory fits, leave it as an empty string.\n"
+                        "Reply with ONLY a JSON array, one object per transaction, in order: "
+                        '[{"n":1,"cat":"Food","sub":"Dinner/Eating Out","conf":0.95}, ...]\n'
+                        "Return ONLY valid JSON, no markdown fences, no extra text."
+                    )},
+                    {"role": "user", "content": numbered_block},
+                ],
+                model=model,
+                api_key=api_key,
+                max_tokens=max(1500, 120 * len(batch_idx)),
+                temperature=0.0,
+                base_url=base_url,
+                json_mode=True,
+            )
+            if raw.startswith("```"):
+                raw = re.sub(r"^```(?:json)?\s*", "", raw)
+                raw = re.sub(r"\s*```$", "", raw)
+            items = _json.loads(raw)
+
+            for item in items:
+                pos = int(item.get("n", 0)) - 1  # 0-based within batch
+                if 0 <= pos < len(batch_idx):
+                    global_idx = batch_idx[pos]
+                    cat = item.get("cat", "Uncategorised")
+                    sub = item.get("sub", "") or ""
+                    # Validate category is in our list
+                    if cat not in categories:
+                        cat = "Uncategorised"
+                        sub = ""
+                    # Validate subcategory belongs to its parent category
+                    valid_subs = list((subcategories or {}).get(cat, {}).keys())
+                    if sub and valid_subs and sub not in valid_subs:
+                        sub = ""
+                    result_categories[global_idx] = cat
+                    result_subcategories[global_idx] = sub
+                    result_confidences[global_idx] = float(item.get("conf", 0.85))
+
+        except Exception as e:
+            st.warning(f"AI categorisation batch error: {e}. Affected rows will use rule-based fallback.")
+            # Leave those entries as Uncategorised – they'll be caught by the caller
+
+    df["category"] = result_categories
+    df["subcategory"] = result_subcategories
+    df["confidence"] = result_confidences
+    return df
+
+
 def categorise_transactions(
     df: pd.DataFrame, rules, subcategories = None, 
     uncategorised_label: str = "Uncategorised"
 ) -> pd.DataFrame:
-    """Enhanced categorization with support for main categories and subcategories."""
+    """Enhanced categorization with support for main categories and subcategories.
+
+    Matches keywords against BOTH the translated ``description`` and the
+    ``original_description`` (Japanese) so that categorization still works
+    even when translation quality is imperfect.
+    """
     
     # Create patterns for main categories
     patterns = {cat: re.compile("(" + "|".join(map(re.escape, kws)) + ")", re.IGNORECASE) for cat, kws in rules.items()}
@@ -1119,16 +1677,23 @@ def categorise_transactions(
                     'pattern': re.compile("(" + "|".join(map(re.escape, keywords)) + ")", re.IGNORECASE)
                 }
     
+    has_original = "original_description" in df.columns
+    
     categories = []
     subcategories_list = []
     
-    for desc in df["description"].astype(str):
+    for idx, row in df.iterrows():
+        desc = str(row.get("description", ""))
+        orig = str(row.get("original_description", "")) if has_original else ""
+        # Combine both descriptions for matching
+        combined = f"{desc} {orig}"
+        
         assigned_category = uncategorised_label
         assigned_subcategory = ""
         
         # First try to match subcategories for more specific categorization
         for sub_key, sub_info in sub_patterns.items():
-            if sub_info['pattern'].search(desc):
+            if sub_info['pattern'].search(combined):
                 assigned_category = sub_info['main']
                 assigned_subcategory = sub_info['sub']
                 break
@@ -1136,7 +1701,7 @@ def categorise_transactions(
         # If no subcategory match, try main categories
         if assigned_category == uncategorised_label:
             for cat, pattern in patterns.items():
-                if pattern.search(desc):
+                if pattern.search(combined):
                     assigned_category = cat
                     break
         
@@ -1231,8 +1796,21 @@ def load_custom_rules(filename: str = "custom_rules.json"):
 
 
 def main() -> None:
-    # Initialize database (ensure all tables exist)
-    init_db()
+    # Initialize database (ensure all tables exist) with safe fallback if import failed
+    try:
+        if 'init_db' in globals() and callable(init_db):  # type: ignore[name-defined]
+            init_db()  # type: ignore[misc]
+        else:
+            try:
+                import data_store as _ds  # type: ignore
+                if hasattr(_ds, 'init_db') and callable(_ds.init_db):
+                    _ds.init_db()
+                else:
+                    st.warning("Database init function not found; proceeding without migration.")
+            except Exception:
+                st.warning("Database module unavailable; proceeding without DB migration.")
+    except Exception as e:
+        st.error(f"Database initialization failed: {e}")
     
     # Require authentication (single-user gate if configured)
     if not require_auth():
@@ -1399,50 +1977,125 @@ def main() -> None:
     
     # AI Translation Setup
     st.sidebar.header("🤖 AI Translation Settings")
-    st.sidebar.write("For best Japanese translation accuracy, use OpenAI GPT-3.5")
-    
-    # Check for existing API key
-    existing_api_key = os.getenv('OPENAI_API_KEY')
-    
-    if existing_api_key:
-        st.sidebar.success("✅ OpenAI API key found in environment")
-        api_key = existing_api_key
-    else:
-        # API Key input
-        api_key = st.sidebar.text_input(
-            "OpenAI API Key", 
-            type="password",
-            help="Get your API key from https://platform.openai.com/api-keys (same account as ChatGPT Premium)"
+
+    # ------------------------------------------------------------------
+    # Load API keys: secrets.toml → environment variable → manual input
+    # ------------------------------------------------------------------
+    openai_key = ""
+    gemini_key = ""
+    try:
+        openai_key = st.secrets.get("openai", {}).get("api_key", "")
+    except Exception:
+        pass
+    try:
+        gemini_key = st.secrets.get("gemini", {}).get("api_key", "")
+    except Exception:
+        pass
+    if not openai_key:
+        openai_key = os.getenv("OPENAI_API_KEY", "")
+    if not gemini_key:
+        gemini_key = os.getenv("GEMINI_API_KEY", "")
+
+    # Determine which providers are available
+    has_openai = bool(openai_key)
+    has_gemini = bool(gemini_key)
+    has_any_key = has_openai or has_gemini
+
+    # Provider selection
+    if has_openai and has_gemini:
+        ai_provider = st.sidebar.selectbox(
+            "AI Provider",
+            ["Gemini (Google)", "OpenAI"],
+            index=0,
+            help="Gemini has a free tier. OpenAI offers GPT-4o models."
         )
-        
+    elif has_gemini:
+        ai_provider = "Gemini (Google)"
+        st.sidebar.success("✅ Gemini API key loaded")
+    elif has_openai:
+        ai_provider = "OpenAI"
+        st.sidebar.success("✅ OpenAI API key loaded")
+    else:
+        # Neither key found — let user pick provider and enter key manually
+        ai_provider = st.sidebar.selectbox(
+            "AI Provider",
+            ["Gemini (Google)", "OpenAI"],
+            index=0,
+            help="Gemini has a free tier (15 req/min). OpenAI offers GPT-4o models."
+        )
+
+    # Resolve the active API key and base_url for the chosen provider
+    if ai_provider == "Gemini (Google)":
+        api_key = gemini_key
+        ai_base_url = GEMINI_PROVIDER
+        provider_models = ["gemini-3.1-flash-lite", "gemini-2.5-flash", "gemini-2.5-flash-lite"]
+        model_help = (
+            "gemini-3.1-flash-lite: newest, optimized for translation (free). "
+            "gemini-2.5-flash: best quality (free, 10 req/min). "
+            "gemini-2.5-flash-lite: fast & generous quota (free, 15 req/min, 1k/day)."
+        )
+        key_url = "https://aistudio.google.com/apikey"
+        secrets_section = "gemini"
+    else:
+        api_key = openai_key
+        ai_base_url = None  # default OpenAI endpoint
+        provider_models = ["gpt-4o-mini", "gpt-4o"]
+        model_help = "gpt-4o-mini: fast & cheap (~$0.01/100 txns). gpt-4o: best quality (~$0.15/100 txns)."
+        key_url = "https://platform.openai.com/api-keys"
+        secrets_section = "openai"
+
+    # If no key for the selected provider, allow manual entry
+    if not api_key:
+        api_key = st.sidebar.text_input(
+            f"{ai_provider} API Key",
+            type="password",
+            help=f"Get your key from {key_url}"
+        )
         if api_key:
             st.sidebar.success("✅ API key configured for this session")
-            # Set environment variable for this session
-            os.environ['OPENAI_API_KEY'] = api_key
-    
-    # Quick setup guide for ChatGPT Premium users
+
+    # Persist key to env so downstream functions can find it
+    if api_key:
+        if ai_provider == "OpenAI":
+            os.environ["OPENAI_API_KEY"] = api_key
+        else:
+            os.environ["GEMINI_API_KEY"] = api_key
+
+    # Quick setup guide when no key is configured
     if not api_key:
-        with st.sidebar.expander("🚀 Quick Setup for ChatGPT Premium Users"):
-            st.write("""
-            1. **Go to:** https://platform.openai.com/api-keys
-            2. **Sign in** with your ChatGPT Premium account
-            3. **Click "Create new secret key"**
-            4. **Copy the key** (starts with `sk-...`)
-            5. **Paste it above** for AI-powered Japanese translation
+        with st.sidebar.expander("🚀 Setup: Save your API key permanently"):
+            st.write(f"""
+            **One-time setup** so you never have to paste it again:
+
+            1. Get your key from [{key_url}]({key_url})
+            2. Open the file `.streamlit/secrets.toml` in this project
+            3. Paste your key between the quotes:
+            ```
+            [{secrets_section}]
+            api_key = "your-key-here"
+            ```
+            4. Restart the app — the key loads automatically!
             """)
-            st.success("💡 Your ChatGPT Premium account gives you access to the API!")
-    
-    # Translation mode selection
+
+    # Translation mode and model selection
     if api_key:
         translation_mode = st.sidebar.selectbox(
             "Translation Mode",
-            ["Free Fallback", "AI-Powered (GPT-3.5)", "No Translation"],
-            index=0,  # Default to Free Fallback
-            help="Free Fallback uses Google Translate, AI-Powered uses OpenAI for better accuracy"
+            ["AI-Powered", "Free Fallback", "No Translation"],
+            index=0,  # Default to AI-Powered when API key is available
+            help="AI-Powered uses your selected AI provider for best accuracy, Free Fallback uses Google Translate"
+        )
+        ai_model = st.sidebar.selectbox(
+            "AI Model",
+            provider_models,
+            index=0,
+            help=model_help,
         )
     else:
         translation_mode = "Free Fallback"
-        st.sidebar.success("ℹ️ Using free translation (enter API key for AI accuracy)")
+        ai_model = "gpt-4o-mini"
+        ai_base_url = None
+        st.sidebar.info("ℹ️ Using free translation (add an API key for AI accuracy)")
     
     # Smart Learning Dashboard
     if learning_system:
@@ -1905,10 +2558,16 @@ def main() -> None:
         # Check if we're in resume mode (df already created above)
         if not st.session_state.get('resume_mode', False):
             try:
-                if uploaded_file.type == "application/pdf":
+                # Determine file type from MIME type or extension
+                file_name = (uploaded_file.name or "").lower()
+                file_type = uploaded_file.type or ""
+                is_pdf = file_type == "application/pdf" or file_name.endswith(".pdf")
+                is_csv = file_type == "text/csv" or file_type == "application/csv" or file_name.endswith(".csv")
+
+                if is_pdf:
                     df = extract_transactions_from_pdf(uploaded_file)
-                elif uploaded_file.type == "text/csv":
-                    df = extract_transactions_from_csv(uploaded_file, translation_mode, api_key)
+                elif is_csv:
+                    df = extract_transactions_from_csv(uploaded_file, translation_mode, api_key, ai_model=ai_model, ai_base_url=ai_base_url)
                     # Set flag and file info for duplicate analysis section
                     st.session_state['csv_file_uploaded'] = True
                     st.session_state['csv_file_name'] = uploaded_file.name
@@ -2039,12 +2698,27 @@ def main() -> None:
         # Detect transaction types (credit vs debit)
         df = detect_transaction_type(df)
         
-        # Apply categorization with smart learning if available
-        if learning_system:
+        # Apply categorization – choose best available method
+        category_list = list(rules.keys())
+        ai_cat_attempted = False
+        if api_key and translation_mode in ("AI-Powered (GPT-4o-mini)", "AI-Powered"):
+            # AI-powered categorization (most accurate for Japanese)
+            st.info(f"🤖 Using AI-powered categorization ({ai_model})…")
+            df_cat = categorise_transactions_ai(df, api_key, category_list, subcategories, model=ai_model, base_url=ai_base_url)
+            ai_cat_attempted = True
+            # Fill any remaining Uncategorised with rule-based fallback
+            uncategorised_mask = df_cat["category"] == "Uncategorised"
+            if uncategorised_mask.any():
+                fallback = categorise_transactions(
+                    df_cat[uncategorised_mask], rules, subcategories
+                )
+                df_cat.loc[uncategorised_mask, "category"] = fallback["category"]
+                df_cat.loc[uncategorised_mask, "subcategory"] = fallback["subcategory"]
+        elif learning_system:
             # Use smart learning system for predictions
             df_cat = apply_smart_categorization(df, learning_system, rules, subcategories)
         else:
-            # Fallback to basic categorization
+            # Fallback to basic rule-based categorization
             df_cat = categorise_transactions(df, rules, subcategories)
         
         # Close the loading spinner and show completion status
@@ -2258,23 +2932,6 @@ def main() -> None:
             
             # Create a form for bulk categorization
             with st.form("bulk_categorization"):
-                # Header row for clarity
-                col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 2, 1, 1, 1, 1])
-                with col1:
-                    st.write("**📅 Date & Description**")
-                with col2:
-                    st.write("**🇯🇵 Original (Japanese)**")
-                with col3:
-                    st.write("**🏷️ Category**")
-                with col4:
-                    st.write("**💰 Amount**")
-                with col5:
-                    st.write("**💳 Type**")
-                with col6:
-                    st.write("**🎯 Confidence**")
-                with col7:
-                    st.write("**⏰ Time**")
-                st.divider()
                 
                 # Suggest categories based on description keywords
                 for idx, row in uncategorized_df.iterrows():
@@ -2290,11 +2947,11 @@ def main() -> None:
                     
                     # Special handling for common Japanese merchants
                     if any(word in original_desc for word in ['ローソン', 'セブンイレブン', 'ファミマ', 'コンビニ']):
-                        suggested_category = "Groceries"
+                        suggested_category = "Food"
                     elif any(word in original_desc for word in ['ニトリ', 'イケア', '家具']):
-                        suggested_category = "Shopping & Retail"
+                        suggested_category = "Household"
                     elif any(word in original_desc for word in ['アマゾン', 'amazon']):
-                        suggested_category = "Shopping & Retail"
+                        suggested_category = "Subscriptions"
                     elif any(word in original_desc for word in ['モバイルパス', '交通']):
                         suggested_category = "Transportation"
                     
@@ -2302,73 +2959,42 @@ def main() -> None:
                     if suggested_category not in all_categories:
                         suggested_category = "Uncategorised"
                     
-                    col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 2, 1, 1, 1, 1])
-                    with col1:
-                        # Show transaction date
-                        transaction_date = row.get('date', 'Unknown Date')
-                        if hasattr(transaction_date, 'strftime'):
-                            date_str = transaction_date.strftime('%Y-%m-%d')
-                        else:
-                            date_str = str(transaction_date)
-                        st.write(f"**📅 {date_str}**")
-                        st.write(f"**{row['description'][:40]}...**")
-                    with col2:
-                        # Show original description if available
-                        if row.get('original_description'):
-                            st.write(f"**🇯🇵 {row['original_description'][:30]}...**")
-                        else:
-                            st.write("**No original description**")
-                    with col3:
-                        try:
-                            # Safe index finding with fallback
-                            suggested_index = all_categories.index(suggested_category) if suggested_category in all_categories else 0
-                            new_category = st.selectbox(
-                                f"Category for {row['description'][:25]}...",
-                                all_categories,
-                                index=suggested_index,
-                                key=f"cat_{idx}"
-                            )
-                        except (ValueError, IndexError):
-                            # Fallback to first category if there's any issue
-                            new_category = st.selectbox(
-                                f"Category for {row['description'][:25]}...",
-                                all_categories,
-                                index=0,
-                                key=f"cat_{idx}"
-                            )
-                    with col4:
-                        st.write(f"**¥{row['amount']:,}**")
-                    with col5:
-                        # Show transaction type with color coding
-                        trans_type = row.get('transaction_type', 'Expense')
-                        if trans_type == 'Credit':
-                            st.write("🟢 **Credit**")
-                        else:
-                            st.write("🔴 **Expense**")
-                    with col6:
-                        # Show confidence score if available
-                        if 'confidence' in row:
-                            confidence = row['confidence']
-                            if confidence >= 0.8:
-                                st.write("🟢 **High**")
-                            elif confidence >= 0.5:
-                                st.write("🟡 **Med**")
-                            else:
-                                st.write("🔴 **Low**")
-                            st.write(f"**{confidence:.0%}**")
-                        else:
-                            st.write("⚪ **N/A**")
-                    with col7:
-                        # Show timestamp if available
-                        if 'timestamp' in row and row.get('timestamp'):
-                            timestamp = row['timestamp']
-                            if hasattr(timestamp, 'strftime'):
-                                time_str = timestamp.strftime('%H:%M:%S')
-                            else:
-                                time_str = str(timestamp)
-                            st.write(f"**⏰ {time_str}**")
-                        else:
-                            st.write("**⏰ N/A**")
+                    # ── Row 1: Full-width descriptions ──
+                    transaction_date = row.get('date', 'Unknown Date')
+                    if hasattr(transaction_date, 'strftime'):
+                        date_str = transaction_date.strftime('%Y-%m-%d')
+                    else:
+                        date_str = str(transaction_date)
+
+                    desc_en = str(row.get('description', ''))
+                    desc_jp = str(row.get('original_description', ''))
+                    trans_type = row.get('transaction_type', 'Expense')
+                    type_icon = "🟢" if trans_type == 'Credit' else "🔴"
+
+                    st.markdown(
+                        f"**📅 {date_str}** &nbsp; {type_icon} **{trans_type}** &nbsp; **¥{row['amount']:,.0f}**"
+                    )
+                    st.markdown(f"🇬🇧 {desc_en}")
+                    if desc_jp and desc_jp != desc_en:
+                        st.markdown(f"🇯🇵 {desc_jp}")
+
+                    # ── Row 2: Category selector ──
+                    try:
+                        suggested_index = all_categories.index(suggested_category) if suggested_category in all_categories else 0
+                        new_category = st.selectbox(
+                            f"Category",
+                            all_categories,
+                            index=suggested_index,
+                            key=f"cat_{idx}"
+                        )
+                    except (ValueError, IndexError):
+                        new_category = st.selectbox(
+                            f"Category",
+                            all_categories,
+                            index=0,
+                            key=f"cat_{idx}"
+                        )
+                    st.divider()
                     
                     # Update the category
                     df_cat.loc[idx, 'category'] = new_category

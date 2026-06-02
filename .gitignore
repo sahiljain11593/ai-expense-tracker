@@ -66,6 +66,7 @@ api_keys.txt
 *.jpg
 *.jpeg
 !test_transactions.csv
+!tests/data/sample_japanese_statement.csv
 
 # Database and exports (sensitive data)
 data/
@@ -74,7 +75,13 @@ backups/
 *.db
 *.sqlite
 *.sqlite3
+!tests/data/
+!tests/data/**
 
 # Temporary files
 *.tmp
 *.temp
+
+# Stray dirs from accidental URL-as-path (e.g. `curl -O https://...`)
+https:/
+http:/

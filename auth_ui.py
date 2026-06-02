@@ -86,7 +86,11 @@ def google_sign_in_widget() -> dict | None:
 
 
 def require_auth() -> bool:
-    allowed_email = st.secrets.get("auth", {}).get("allowed_email")
+    try:
+        allowed_email = st.secrets.get("auth", {}).get("allowed_email")
+    except Exception:
+        # No secrets file found – skip auth for local development
+        allowed_email = None
     # If no allowed email configured, skip auth for E2E checks
     if not allowed_email:
         return True
