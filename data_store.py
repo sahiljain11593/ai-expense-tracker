@@ -403,7 +403,6 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
 
 
 def normalize_date_for_db(date_val) -> str:
-    """Convert date-like values (date, datetime, pandas Timestamp) to YYYY-MM-DD for SQLite."""
     if date_val is None:
         return ""
     if hasattr(date_val, "strftime"):
@@ -904,19 +903,13 @@ def save_categorization_progress(
     try:
         cur = conn.cursor()
         
+        # Create transaction hash for uniqueness
         date_str = normalize_date_for_db(transaction_data.get("date"))
         amount_val = float(transaction_data.get("amount", 0.0))
-
-        # Create transaction hash for uniqueness
         transaction_hash = compute_dedupe_hash(
-            date_str,
-            transaction_data.get("description", ""),
-            amount_val,
+            date_str, transaction_data.get("description", ""), amount_val,
         )
-        
         now = datetime.now().isoformat()
-        
-        # Upsert the progress record
         cur.execute(
             """
             INSERT OR REPLACE INTO categorization_progress
@@ -1140,6 +1133,24 @@ def get_merchant_categorization_suggestions(limit: int = 20, db_path: str = DEFA
         conn.close()
 
 
+def load_merchant_learning(db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
+    """Load all rows from merchant_learning for in-memory categorization."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.row_factory = sqlite3.Row
+        cur.execute(
+            """
+            SELECT merchant, category, subcategory, frequency, confidence_score
+            FROM merchant_learning
+            ORDER BY merchant, frequency DESC
+            """
+        )
+        return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+
 def apply_bulk_categorization_rules(
     session_id: int, 
     rules: List[Dict], 
@@ -1219,7 +1230,6 @@ def learn_from_categorization(
     """Learn from a user's categorization decision and store it persistently with contextual patterns."""
     if date is not None:
         date = normalize_date_for_db(date)
-
     conn = get_connection(db_path)
     try:
         cur = conn.cursor()
@@ -1523,35 +1533,6 @@ def get_learning_statistics(db_path: str = DEFAULT_DB_PATH) -> Dict:
             'total_patterns': total_patterns,
             'recent_learning': recent_learning
         }
-    finally:
-        conn.close()
-
-
-def load_merchant_learning(db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
-    """Load all merchant-category mappings from the database.
-
-    Returns a list of dicts with keys: merchant, category, subcategory, frequency, confidence_score.
-    """
-    conn = get_connection(db_path)
-    try:
-        cur = conn.cursor()
-        cur.execute(
-            "SELECT merchant, category, subcategory, frequency, confidence_score "
-            "FROM merchant_learning ORDER BY frequency DESC"
-        )
-        rows = cur.fetchall()
-        return [
-            {
-                "merchant": r[0],
-                "category": r[1],
-                "subcategory": r[2],
-                "frequency": r[3],
-                "confidence_score": r[4],
-            }
-            for r in rows
-        ]
-    except Exception:
-        return []
     finally:
         conn.close()
 
