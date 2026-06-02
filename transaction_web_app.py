@@ -28,7 +28,7 @@ import os
 import re
 from datetime import datetime
 import unicodedata
-from typing import Optional
+from typing import Dict, List, Optional
 
 
 import pandas as pd
@@ -113,22 +113,12 @@ except Exception as _e:
     InteractiveFilters = None  # type: ignore
     ADVANCED_FEATURES_AVAILABLE = False
 
-from mobile_ui import (
-    default_description_column_width,
-    inject_mobile_styles,
-    layout_columns,
-    mobile_saved_transactions_display_columns,
-    render_sidebar_mobile_controls,
-    render_transaction_filters,
-    use_compact_layout,
-)
+from categorization_config import get_categorization_rules, get_subcategories
+from categorization_engine import apply_hybrid_categorization, categorise_transactions
+from statement_parsers import extract_rakuten_card_pdf, is_rakuten_card_statement_text
 
-st.set_page_config(
-    layout="wide",
-    page_title="AI Expense Tracker",
-    page_icon="💰",
-    initial_sidebar_state="collapsed",
-)
+# Wide layout for more horizontal space
+st.set_page_config(layout="wide", page_title="AI Expense Tracker", page_icon="💰")
 
 # Smart Learning System (now using built-in MerchantLearningSystem class)
 
@@ -146,70 +136,42 @@ except ImportError:
 
 
 class MerchantLearningSystem:
-    """Learning system that improves categorization based on user feedback.
-
-    Loads previously-learned merchant-category mappings from the SQLite database
-    at startup so knowledge persists across sessions, and writes corrections back
-    to the database on every user feedback event.
-    """
+    """Learning system that improves categorization based on user feedback."""
 
     def __init__(self):
-        self.merchant_categories: dict[str, dict[str, int]] = {}
-        self.merchant_patterns: dict = {}
-        self.user_corrections: list[dict] = []
-        self.confidence_scores: dict[str, dict[str, float]] = {}
-        # Load persisted learning from database
+        self.merchant_categories = {}
+        self.merchant_patterns = {}
+        self.user_corrections = []
+        self.confidence_scores = {}
         self._load_from_db()
 
-    # ── persistence helpers ──────────────────────────────────────────
-
-    def _load_from_db(self):
-        """Populate in-memory merchant mappings from the merchant_learning table."""
+    def _load_from_db(self) -> None:
         if load_merchant_learning is None:
             return
         try:
-            rows = load_merchant_learning()
-            for r in rows:
-                merchant = r["merchant"]
-                category = r["category"]
-                freq = r.get("frequency", 1)
-                conf = r.get("confidence_score", 0.5)
-                if merchant not in self.merchant_categories:
-                    self.merchant_categories[merchant] = {}
+            for row in load_merchant_learning():
+                merchant, category = row.get("merchant"), row.get("category")
+                if not merchant or not category:
+                    continue
+                freq = int(row.get("frequency") or 1)
+                conf = float(row.get("confidence_score") or 0.5)
+                self.merchant_categories.setdefault(merchant, {})
                 self.merchant_categories[merchant][category] = (
                     self.merchant_categories[merchant].get(category, 0) + freq
                 )
-                if merchant not in self.confidence_scores:
-                    self.confidence_scores[merchant] = {}
+                self.confidence_scores.setdefault(merchant, {})
                 self.confidence_scores[merchant][category] = max(
                     self.confidence_scores[merchant].get(category, 0.0), conf
                 )
         except Exception:
-            pass  # Gracefully continue without DB data
-
-    def _persist_correction(self, description: str, category: str, subcategory: str = "",
-                            amount: float = None, date: str = None):
-        """Write a single correction to the database."""
-        if learn_from_categorization is None:
-            return
-        try:
-            learn_from_categorization(
-                description=description,
-                category=category,
-                subcategory=subcategory,
-                amount=amount,
-                date=date,
-            )
-        except Exception:
-            pass  # Non-critical; in-memory learning still active
-
-    # ── public API ───────────────────────────────────────────────────
-
+            pass
+    
     def learn_from_user_feedback(self, transaction_id: str, old_category: str, new_category: str, transaction_data: dict):
         """Learn from user corrections to improve future categorizations."""
         merchant = self._extract_merchant(transaction_data['description'])
         original_desc = transaction_data.get('original_description', '')
-
+        
+        # Store the correction
         correction = {
             'transaction_id': transaction_id,
             'merchant': merchant,
@@ -217,102 +179,113 @@ class MerchantLearningSystem:
             'new_category': new_category,
             'description': transaction_data['description'],
             'original_description': original_desc,
-            'amount': transaction_data.get('amount'),
+            'amount': transaction_data['amount'],
             'timestamp': pd.Timestamp.now()
         }
         self.user_corrections.append(correction)
-
-        # Update in-memory merchant category mapping
+        
+        # Update merchant category mapping
         if merchant not in self.merchant_categories:
             self.merchant_categories[merchant] = {}
+        
         if new_category not in self.merchant_categories[merchant]:
             self.merchant_categories[merchant][new_category] = 0
+        
         self.merchant_categories[merchant][new_category] += 1
+        
+        # Update confidence scores
         self._update_confidence(merchant, new_category)
-
-        # Persist to database
-        self._persist_correction(
-            description=transaction_data['description'],
-            category=new_category,
-            subcategory=transaction_data.get('subcategory', ''),
-            amount=transaction_data.get('amount'),
-            date=str(transaction_data.get('date', '')),
-        )
+        if learn_from_categorization is not None:
+            try:
+                learn_from_categorization(
+                    description=transaction_data.get("description", ""),
+                    category=new_category,
+                    subcategory=transaction_data.get("subcategory"),
+                    amount=transaction_data.get("amount"),
+                    date=str(transaction_data.get("date")) if transaction_data.get("date") else None,
+                )
+            except Exception:
+                pass
 
     def suggest_category(self, description: str, original_description: str = "") -> tuple:
         """Suggest category based on learned patterns."""
         merchant = self._extract_merchant(description)
-
+        if merchant == "unknown" and original_description:
+            merchant = self._extract_merchant(original_description)
         if merchant in self.merchant_categories:
+            # Get the most frequently used category for this merchant
             categories = self.merchant_categories[merchant]
             if categories:
                 best_category = max(categories, key=categories.get)
                 confidence = self.confidence_scores.get(merchant, {}).get(best_category, 0.5)
                 return best_category, confidence
-
-        # Also try matching on original (Japanese) description
-        if original_description:
-            merchant_orig = self._extract_merchant(original_description)
-            if merchant_orig in self.merchant_categories:
-                categories = self.merchant_categories[merchant_orig]
-                if categories:
-                    best_category = max(categories, key=categories.get)
-                    confidence = self.confidence_scores.get(merchant_orig, {}).get(best_category, 0.5)
-                    return best_category, confidence
-
+        
         return "Uncategorised", 0.0
-
+    
     def predict_category(self, transaction_data: dict) -> tuple:
         """Predict category for a transaction with confidence and breakdown."""
         description = transaction_data.get('description', '')
         original_description = transaction_data.get('original_description', '')
-
+        
+        # Get suggestion from learning system
         suggested_category, confidence = self.suggest_category(description, original_description)
-
+        
+        # Create prediction breakdown
         breakdown = {
             'method': 'merchant_learning',
             'confidence': confidence,
             'merchant': self._extract_merchant(description),
             'suggested_category': suggested_category
         }
-
+        
         return suggested_category, confidence, breakdown
-
-    # ── internal helpers ─────────────────────────────────────────────
-
+    
     def _extract_merchant(self, description: str) -> str:
         """Extract merchant name from transaction description."""
+        # Remove common prefixes and suffixes
         description = description.lower()
+        
+        # Common patterns to remove
         patterns_to_remove = [
             r'visa\s+domestic\s+use\s+vs\s+',
             r'credit\s+card\s+',
             r'debit\s+card\s+',
             r'atm\s+',
             r'pos\s+',
-            r'\d+',
-            r'[^\w\s\u3040-\u30FF\u4E00-\u9FFF]',  # Keep Japanese characters
+            r'\d+',  # Remove numbers
+            r'[^\w\s]',  # Remove special characters
         ]
+        
         merchant = description
         for pattern in patterns_to_remove:
             merchant = re.sub(pattern, '', merchant)
+        
+        # Clean up whitespace
         merchant = ' '.join(merchant.split())
+        
         return merchant if merchant else "unknown"
-
+    
     def _update_confidence(self, merchant: str, category: str):
         """Update confidence score for merchant-category pair."""
         if merchant not in self.confidence_scores:
             self.confidence_scores[merchant] = {}
+        
         if category not in self.confidence_scores[merchant]:
             self.confidence_scores[merchant][category] = 0.5
+        
+        # Increase confidence with each correction
         current_confidence = self.confidence_scores[merchant][category]
         self.confidence_scores[merchant][category] = min(0.95, current_confidence + 0.1)
-
+    
     def get_learning_stats(self) -> dict:
         """Get statistics about the learning system."""
         total_corrections = len(self.user_corrections)
         unique_merchants = len(self.merchant_categories)
-        recent_corrections = [c for c in self.user_corrections
-                              if (pd.Timestamp.now() - c['timestamp']).days < 30]
+        
+        # Calculate accuracy improvement
+        recent_corrections = [c for c in self.user_corrections 
+                            if (pd.Timestamp.now() - c['timestamp']).days < 30]
+        
         return {
             'total_corrections': total_corrections,
             'unique_merchants': unique_merchants,
@@ -323,14 +296,18 @@ class MerchantLearningSystem:
 
 
 def extract_transactions_from_pdf(file_stream: io.BytesIO) -> pd.DataFrame:
-    """Extract transactions from a PDF statement using pdfplumber.
-
-    Assumes the PDF contains a table with columns Date, Description and
-    Amount.  This function looks for the largest table on the first few
-    pages.  It may need adaptation for your specific statement layout.
-    """
+    """Extract transactions from PDF statements (Rakuten card or English tables)."""
     if pdfplumber is None:
         raise RuntimeError("pdfplumber is not installed; please install it to process PDFs.")
+
+    if hasattr(file_stream, "seek"):
+        file_stream.seek(0)
+    rakuten_df = extract_rakuten_card_pdf(file_stream)
+    if rakuten_df is not None and not rakuten_df.empty:
+        return rakuten_df
+
+    if hasattr(file_stream, "seek"):
+        file_stream.seek(0)
 
     transactions = []
     with pdfplumber.open(file_stream) as pdf:
@@ -338,7 +315,7 @@ def extract_transactions_from_pdf(file_stream: io.BytesIO) -> pd.DataFrame:
             tables = page.extract_tables()
             for table in tables:
                 if len(table) > 1 and len(table[0]) >= 3:
-                    header = [h.strip().lower() for h in table[0]]
+                    header = [(h or "").strip().lower() for h in table[0]]
                     try:
                         date_idx = header.index("date")
                         desc_idx = header.index("description")
@@ -346,26 +323,36 @@ def extract_transactions_from_pdf(file_stream: io.BytesIO) -> pd.DataFrame:
                     except ValueError:
                         continue
                     for row in table[1:]:
+                        if not row or date_idx >= len(row) or desc_idx >= len(row) or amt_idx >= len(row):
+                            continue
+                        date_cell = row[date_idx]
+                        desc_cell = row[desc_idx]
+                        amt_cell = row[amt_idx]
+                        if date_cell is None or desc_cell is None or amt_cell is None:
+                            continue
                         try:
-                            date = datetime.strptime(row[date_idx].strip(), "%d/%m/%Y")
+                            date = datetime.strptime(str(date_cell).strip(), "%d/%m/%Y")
                         except Exception:
                             try:
-                                date = datetime.strptime(row[date_idx].strip(), "%Y-%m-%d")
+                                date = datetime.strptime(str(date_cell).strip(), "%Y-%m-%d")
                             except Exception:
                                 continue
-                        description = row[desc_idx].strip()
+                        description = str(desc_cell).strip()
                         try:
-                            amount = float(row[amt_idx].replace(",", ""))
+                            amount = float(str(amt_cell).replace(",", ""))
                         except Exception:
                             continue
-                        transactions.append({"date": date, "description": 
-description, "amount": amount})
+                        transactions.append(
+                            {"date": date, "description": description, "amount": amount}
+                        )
             if transactions:
                 break
     if not transactions:
-        raise RuntimeError("No transaction table detected in the uploaded PDF.")
-    df = pd.DataFrame(transactions)
-    return df
+        raise RuntimeError(
+            "No transaction table detected in the uploaded PDF. "
+            "For Rakuten card statements, ensure the ご利用明細 section is present."
+        )
+    return pd.DataFrame(transactions)
 
 
 def extract_transactions_from_image(file_stream: io.BytesIO) -> pd.DataFrame:
@@ -1166,112 +1153,6 @@ def detect_transaction_type(df: pd.DataFrame) -> pd.DataFrame:
     
     return df
 
-def categorise_transactions(
-    df: pd.DataFrame, rules, subcategories = None, 
-    uncategorised_label: str = "Uncategorised"
-) -> pd.DataFrame:
-    """Enhanced categorization with support for main categories and subcategories."""
-    
-    # Create patterns for main categories
-    patterns = {cat: re.compile("(" + "|".join(map(re.escape, kws)) + ")", re.IGNORECASE) for cat, kws in rules.items()}
-    
-    # Create patterns for subcategories
-    sub_patterns = {}
-    if subcategories:
-        for main_cat, subs in subcategories.items():
-            for sub_cat, keywords in subs.items():
-                sub_patterns[f"{main_cat}_{sub_cat}"] = {
-                    'main': main_cat,
-                    'sub': sub_cat,
-                    'pattern': re.compile("(" + "|".join(map(re.escape, keywords)) + ")", re.IGNORECASE)
-                }
-    
-    categories = []
-    subcategories_list = []
-    
-    for desc in df["description"].astype(str):
-        assigned_category = uncategorised_label
-        assigned_subcategory = ""
-        
-        # First try to match subcategories for more specific categorization
-        for sub_key, sub_info in sub_patterns.items():
-            if sub_info['pattern'].search(desc):
-                assigned_category = sub_info['main']
-                assigned_subcategory = sub_info['sub']
-                break
-        
-        # If no subcategory match, try main categories
-        if assigned_category == uncategorised_label:
-            for cat, pattern in patterns.items():
-                if pattern.search(desc):
-                    assigned_category = cat
-                    break
-        
-        categories.append(assigned_category)
-        subcategories_list.append(assigned_subcategory)
-    
-    df = df.copy()
-    df["category"] = categories
-    df["subcategory"] = subcategories_list
-    
-    return df
-
-
-def apply_smart_categorization(df: pd.DataFrame, learning_system, 
-                              rules, subcategories) -> pd.DataFrame:
-    """Apply smart categorization using the learning system."""
-    
-    df = df.copy()
-    categories = []
-    subcategories_list = []
-    confidences = []
-    prediction_breakdowns = []
-    
-    for idx, row in df.iterrows():
-        # Prepare transaction data for prediction
-        transaction_data = {
-            'description': row.get('description', ''),
-            'original_description': row.get('original_description', ''),
-            'amount': row.get('amount', 0),
-            'date': row.get('date'),
-            'transaction_type': row.get('transaction_type', 'Expense')
-        }
-        
-        # Get smart prediction
-        try:
-            if learning_system:
-                predicted_category, confidence, breakdown = learning_system.predict_category(transaction_data)
-            else:
-                predicted_category = "Uncategorised"
-                confidence = 0.0
-                breakdown = {'method': 'fallback', 'confidence': 0.0}
-        except Exception as e:
-            # Fallback to basic categorization if learning system fails
-            predicted_category = "Uncategorised"
-            confidence = 0.0
-            breakdown = {'method': 'fallback', 'confidence': 0.0, 'error': str(e)}
-        
-        # Apply subcategory if available
-        predicted_subcategory = ""
-        if predicted_category in subcategories:
-            # Find best matching subcategory
-            for sub_cat, keywords in subcategories[predicted_category].items():
-                if any(keyword.lower() in str(transaction_data['description']).lower() 
-                       for keyword in keywords):
-                    predicted_subcategory = sub_cat
-                    break
-        
-        categories.append(predicted_category)
-        subcategories_list.append(predicted_subcategory)
-        confidences.append(confidence)
-        prediction_breakdowns.append(breakdown)
-    
-    df['category'] = categories
-    df['subcategory'] = subcategories_list
-    df['confidence'] = confidences
-    df['prediction_breakdown'] = prediction_breakdowns
-    
-    return df
 
 
 def save_custom_rules(rules, filename: str = "custom_rules.json") -> None:
@@ -1305,12 +1186,7 @@ def main() -> None:
     if not require_auth():
         return
 
-    render_sidebar_mobile_controls()
-    inject_mobile_styles()
-
     st.title("💰 AI Expense Tracker")
-    if use_compact_layout():
-        st.caption("📱 Compact layout on — optimized for your phone browser.")
     
     # Concise onboarding
     with st.expander("ℹ️ Quick Start Guide", expanded=False):
@@ -1516,28 +1392,30 @@ def main() -> None:
         translation_mode = "Free Fallback"
         st.sidebar.success("ℹ️ Using free translation (enter API key for AI accuracy)")
     
-    # Smart Learning Dashboard (collapsed in sidebar — easier on mobile)
+    # Smart Learning Dashboard
     if learning_system:
-        with st.sidebar.expander("🧠 Smart Learning Dashboard", expanded=False):
-            stats = learning_system.get_learning_stats()
-            st.write(f"**Total Corrections:** {stats['total_corrections']}")
-            st.write(f"**Unique Merchants:** {stats['unique_merchants']}")
-            st.write(f"**Recent Corrections:** {stats['recent_corrections']}")
-            if stats['merchant_categories']:
-                st.write("**Learning Progress:**")
-                for merchant, categories in list(stats['merchant_categories'].items())[:5]:
-                    if merchant != "unknown":
-                        category_names = list(categories.keys())
-                        st.write(f"• {merchant[:20]}: {category_names[0] if category_names else 'None'}")
-            if stats['confidence_scores']:
-                st.write("**Confidence Levels:**")
-                high_confidence = sum(
-                    1
-                    for merchant_scores in stats['confidence_scores'].values()
-                    for score in merchant_scores.values()
-                    if score >= 0.8
-                )
-                st.write(f"• High Confidence: {high_confidence}")
+        st.sidebar.header("🧠 Smart Learning Dashboard")
+        
+        # Show learning statistics
+        stats = learning_system.get_learning_stats()
+        st.sidebar.write(f"**Total Corrections:** {stats['total_corrections']}")
+        st.sidebar.write(f"**Unique Merchants:** {stats['unique_merchants']}")
+        st.sidebar.write(f"**Recent Corrections:** {stats['recent_corrections']}")
+        
+        # Show merchant learning progress
+        if stats['merchant_categories']:
+            st.sidebar.write("**Learning Progress:**")
+            for merchant, categories in list(stats['merchant_categories'].items())[:5]:  # Show first 5
+                if merchant != "unknown":
+                    category_names = list(categories.keys())
+                    st.sidebar.write(f"• {merchant[:20]}: {category_names[0] if category_names else 'None'}")
+        
+        # Show confidence scores
+        if stats['confidence_scores']:
+            st.sidebar.write("**Confidence Levels:**")
+            high_confidence = sum(1 for merchant_scores in stats['confidence_scores'].values() 
+                                for score in merchant_scores.values() if score >= 0.8)
+            st.sidebar.write(f"• High Confidence: {high_confidence}")
     
     # View Saved Transactions Section
     st.divider()
@@ -1689,23 +1567,40 @@ def main() -> None:
                     
                     st.divider()
                     
+                    # Filters for saved transactions
                     st.subheader("🔍 Filter Saved Transactions")
-                    saved_categories, saved_types, _, saved_search, date_from, date_to = render_transaction_filters(
-                        key_prefix="saved",
-                        category_options=(
-                            sorted(df_saved["category"].dropna().unique())
-                            if "category" in df_saved.columns
-                            else []
-                        ),
-                        type_options=(
-                            df_saved["transaction_type"].dropna().unique()
-                            if "transaction_type" in df_saved.columns
-                            else []
-                        ),
-                        show_dates="date" in df_saved.columns,
-                    )
-                    if "date" not in df_saved.columns:
-                        date_from = date_to = None
+                    filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 1, 1, 1])
+                    
+                    with filter_col1:
+                        saved_categories = st.multiselect(
+                            "Categories",
+                            options=sorted(df_saved['category'].dropna().unique()) if 'category' in df_saved.columns else [],
+                            default=None,
+                            key="saved_cat_filter"
+                        )
+                    
+                    with filter_col2:
+                        saved_types = st.multiselect(
+                            "Type",
+                            options=df_saved['transaction_type'].dropna().unique() if 'transaction_type' in df_saved.columns else [],
+                            default=None,
+                            key="saved_type_filter"
+                        )
+                    
+                    with filter_col3:
+                        if 'date' in df_saved.columns:
+                            date_from = st.date_input("From Date", value=None, key="saved_date_from")
+                            date_to = st.date_input("To Date", value=None, key="saved_date_to")
+                        else:
+                            date_from = None
+                            date_to = None
+                    
+                    with filter_col4:
+                        saved_search = st.text_input(
+                            "Search Description",
+                            placeholder="Search...",
+                            key="saved_search"
+                        )
                     
                     # Apply filters
                     df_filtered = df_saved.copy()
@@ -1756,10 +1651,10 @@ def main() -> None:
                                 dashboard.render_hero_metrics(transactions_list)
                                 
                                 # Quick charts
-                                chart_col1, chart_col2 = layout_columns(2)
-                                with chart_col1:
+                                col1, col2 = st.columns(2)
+                                with col1:
                                     dashboard.render_category_breakdown_chart(transactions_list)
-                                with chart_col2:
+                                with col2:
                                     dashboard.render_spending_heatmap(transactions_list)
                             
                             with dash_tab2:
@@ -1807,7 +1702,13 @@ def main() -> None:
                     # Display transactions
                     st.subheader("📋 Transactions")
                     
-                    display_columns = mobile_saved_transactions_display_columns(df_filtered)
+                    # Prepare display columns
+                    display_columns = ['date', 'description', 'amount_jpy', 'category', 'transaction_type']
+                    if 'original_description' in df_filtered.columns:
+                        display_columns.insert(2, 'original_description')
+                    
+                    # Filter to display columns that exist
+                    display_columns = [col for col in display_columns if col in df_filtered.columns]
                     
                     # Sort by date descending (most recent first)
                     df_display = df_filtered[display_columns].sort_values('date', ascending=False)
@@ -1834,7 +1735,7 @@ def main() -> None:
                     st.divider()
                     st.subheader("📊 Analytics")
                     
-                    chart_col1, chart_col2 = layout_columns(2)
+                    chart_col1, chart_col2 = st.columns(2)
                     
                     with chart_col1:
                         st.write("**Spending by Category**")
@@ -1979,99 +1880,9 @@ def main() -> None:
         # Show loading animation during processing
         with st.spinner("🔄 Processing transactions and applying smart categorization..."):
             # MoneyMgr Proven Categorization System (Based on 3,943+ real transactions)
-            rules = {
-            "Food": [
-                # Groceries and Food Stores
-                "ローソン", "セブンイレブン", "ファミリーマート", "コンビニ", "lawson", "seven eleven", "family mart",
-                "ポプラグループ", "poplar", "スーパー", "supermarket", "grocery", "market", "food", "fresh",
-                "イオン", "aeon", "イトーヨーカドー", "itoyokado", "西友", "seiyu", "ライフ", "life",
-                # Restaurants and Dining
-                "レストラン", "restaurant", "cafe", "dinner", "lunch", "breakfast", "takeaway", "delivery",
-                "居酒屋", "izakaya", "バー", "bar", "カフェ", "coffee", "ピザ", "pizza", "寿司", "sushi",
-                "マクドナルド", "mcdonalds", "ケンタッキー", "kfc", "スターバックス", "starbucks"
-            ],
-            "Social Life": [
-                # Social Activities
-                "飲み会", "drinking", "パーティー", "party", "イベント", "event", "友達", "friend", "同僚", "colleague",
-                "会食", "dining", "懇親会", "networking", "歓迎会", "welcome", "送別会", "farewell",
-                "カラオケ", "karaoke", "ボーリング", "bowling", "ゲーム", "game", "スポーツ", "sports"
-            ],
-            "Subscriptions": [
-                # Digital Services
-                "icloud", "apple music", "amazon prime", "google one", "netflix", "spotify", "hulu", "disney+",
-                "アマゾンプライム", "グーグルワン", "アップルミュージック", "アイクラウド",
-                "subscription", "membership", "月額", "monthly", "年額", "annual"
-            ],
-            "Household": [
-                # Home and Living
-                "家賃", "rent", "光熱費", "utility", "電気", "electric", "ガス", "gas", "水道", "water",
-                "家具", "furniture", "家電", "appliance", "日用品", "daily", "掃除", "cleaning",
-                "ニトリ", "nitori", "イケア", "ikea", "ホームセンター", "home center"
-            ],
-            "Transportation": [
-                # Public Transport and Travel
-                "電車", "train", "バス", "bus", "タクシー", "taxi", "地下鉄", "subway", "モノレール", "monorail",
-                "モバイルパス", "mobile pass", "交通費", "transport", "駐車場", "parking", "高速道路", "highway",
-                "ＥＴＣ", "etc", "ガソリン", "gasoline", "燃料", "fuel", "車", "car", "バイク", "bike"
-            ],
-            "Vacation": [
-                # Travel and Leisure
-                "旅行", "travel", "ホテル", "hotel", "飛行機", "flight", "新幹線", "shinkansen", "観光", "tourism",
-                "温泉", "onsen", "リゾート", "resort", "ビーチ", "beach", "山", "mountain", "海", "sea",
-                "チケット", "ticket", "ツアー", "tour", "宿泊", "accommodation"
-            ],
-            "Health": [
-                # Healthcare and Wellness
-                "病院", "hospital", "クリニック", "clinic", "歯科", "dental", "眼科", "eye", "薬局", "pharmacy",
-                "薬", "medicine", "保険", "insurance", "診察", "examination", "治療", "treatment",
-                "フィットネス", "fitness", "ジム", "gym", "ヨガ", "yoga", "マッサージ", "massage"
-            ],
-            "Apparel": [
-                # Clothing and Fashion
-                "服", "clothing", "靴", "shoes", "バッグ", "bag", "アクセサリー", "accessory", "時計", "watch",
-                "ユニクロ", "uniqlo", "zara", "h&m", "gap", "nike", "adidas", "アディダス", "ナイキ",
-                "ファッション", "fashion", "スタイル", "style", "ブランド", "brand"
-            ],
-            "Grooming": [
-                # Personal Care
-                "美容", "beauty", "化粧品", "cosmetics", "スキンケア", "skincare", "ヘアケア", "haircare",
-                "ネイル", "nail", "エステ", "esthetic", "理容", "barber", "美容院", "salon",
-                "資生堂", "shiseido", "ポーラ", "pola", "ファンケル", "fancl"
-            ],
-            "Self-development": [
-                # Education and Growth
-                "本", "book", "雑誌", "magazine", "新聞", "newspaper", "講座", "course", "セミナー", "seminar",
-                "ワークショップ", "workshop", "資格", "certification", "学習", "learning", "スキル", "skill",
-                "オンライン", "online", "eラーニング", "elearning", "トレーニング", "training"
-            ]
-        }
-        
-        # MoneyMgr Subcategory System for Detailed Breakdown
-        subcategories = {
-            "Food": {
-                "Groceries": ["ローソン", "セブンイレブン", "ファミリーマート", "コンビニ", "スーパー", "ポプラグループ"],
-                "Dinner/Eating Out": ["レストラン", "居酒屋", "バー", "dinner", "restaurant", "izakaya"],
-                "Lunch/Eating Out": ["lunch", "カフェ", "coffee", "昼食", "ランチ"],
-                "Beverages A": ["スターバックス", "コーヒー", "tea", "ジュース", "drink"],
-                "Beverages/Non-A": ["アルコール", "酒", "ビール", "wine", "spirits"]
-            },
-            "Social Life": {
-                "Drinking": ["飲み会", "drinking", "パーティー", "party", "カラオケ", "karaoke"],
-                "Event": ["イベント", "event", "会食", "dining", "懇親会", "networking"],
-                "Friend": ["友達", "friend", "同僚", "colleague", "歓迎会", "送別会"]
-            },
-            "Transportation": {
-                "Subway": ["地下鉄", "subway", "電車", "train", "モノレール", "monorail"],
-                "Taxi": ["タクシー", "taxi", "車", "car", "ライドシェア", "rideshare"],
-                "Mobile Pass": ["モバイルパス", "mobile pass", "交通費", "transport"],
-                "ETC": ["ＥＴＣ", "etc", "高速道路", "highway", "駐車場", "parking"]
-            },
-            "Household": {
-                "Rent": ["家賃", "rent", "住宅費", "housing"],
-                "Utilities": ["光熱費", "utility", "電気", "electric", "ガス", "gas", "水道", "water"],
-                "Furniture": ["家具", "furniture", "ニトリ", "nitori", "イケア", "ikea"]
-            }
-        }
+            rules = get_categorization_rules()
+            subcategories = get_subcategories()
+
         # Currency settings and FX normalization
         st.subheader("💱 Currency & FX")
         default_currency = st.selectbox(
@@ -2087,11 +1898,21 @@ def main() -> None:
         df = detect_transaction_type(df)
         
         # Apply categorization with smart learning if available
+        ensemble_engine = None
+        historical_data = None
+        if ADVANCED_FEATURES_AVAILABLE:
+            ensemble_engine = st.session_state.get("ensemble_engine")
+            if load_all_transactions is not None:
+                try:
+                    historical_data = load_all_transactions() or []
+                except Exception:
+                    historical_data = []
         if learning_system:
-            # Use smart learning system for predictions
-            df_cat = apply_smart_categorization(df, learning_system, rules, subcategories)
+            df_cat = apply_hybrid_categorization(
+                df, learning_system, rules, subcategories,
+                ensemble_engine=ensemble_engine, historical_data=historical_data,
+            )
         else:
-            # Fallback to basic categorization
             df_cat = categorise_transactions(df, rules, subcategories)
         
         # Close the loading spinner and show completion status
@@ -2305,33 +2126,37 @@ def main() -> None:
             
             # Create a form for bulk categorization
             with st.form("bulk_categorization"):
-                compact_bulk = use_compact_layout()
-                if not compact_bulk:
-                    col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 2, 1, 1, 1, 1])
-                    with col1:
-                        st.write("**📅 Date & Description**")
-                    with col2:
-                        st.write("**🇯🇵 Original (Japanese)**")
-                    with col3:
-                        st.write("**🏷️ Category**")
-                    with col4:
-                        st.write("**💰 Amount**")
-                    with col5:
-                        st.write("**💳 Type**")
-                    with col6:
-                        st.write("**🎯 Confidence**")
-                    with col7:
-                        st.write("**⏰ Time**")
-                    st.divider()
-
+                # Header row for clarity
+                col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 2, 1, 1, 1, 1])
+                with col1:
+                    st.write("**📅 Date & Description**")
+                with col2:
+                    st.write("**🇯🇵 Original (Japanese)**")
+                with col3:
+                    st.write("**🏷️ Category**")
+                with col4:
+                    st.write("**💰 Amount**")
+                with col5:
+                    st.write("**💳 Type**")
+                with col6:
+                    st.write("**🎯 Confidence**")
+                with col7:
+                    st.write("**⏰ Time**")
+                st.divider()
+                
+                # Suggest categories based on description keywords
                 for idx, row in uncategorized_df.iterrows():
                     description = str(row['description']).lower()
                     original_desc = str(row.get('original_description', '')).lower()
+                    
+                    # Smart category suggestions based on keywords
                     suggested_category = "Uncategorised"
                     for category, keywords in rules.items():
                         if any(keyword.lower() in description or keyword.lower() in original_desc for keyword in keywords):
                             suggested_category = category
                             break
+                    
+                    # Special handling for common Japanese merchants
                     if any(word in original_desc for word in ['ローソン', 'セブンイレブン', 'ファミマ', 'コンビニ']):
                         suggested_category = "Groceries"
                     elif any(word in original_desc for word in ['ニトリ', 'イケア', '家具']):
@@ -2340,81 +2165,94 @@ def main() -> None:
                         suggested_category = "Shopping & Retail"
                     elif any(word in original_desc for word in ['モバイルパス', '交通']):
                         suggested_category = "Transportation"
+                    
+                    # Ensure suggested category is in the list
                     if suggested_category not in all_categories:
                         suggested_category = "Uncategorised"
-
-                    transaction_date = row.get("date", "Unknown Date")
-                    date_str = (
-                        transaction_date.strftime("%Y-%m-%d")
-                        if hasattr(transaction_date, "strftime")
-                        else str(transaction_date)
-                    )
-                    try:
-                        suggested_index = (
-                            all_categories.index(suggested_category)
-                            if suggested_category in all_categories
-                            else 0
-                        )
-                    except (ValueError, IndexError):
-                        suggested_index = 0
-
-                    if compact_bulk:
-                        with st.container(border=True):
-                            trans_type = row.get("transaction_type", "Expense")
-                            st.markdown(f"**📅 {date_str}** · ¥{row['amount']:,} · {trans_type}")
-                            st.caption(str(row["description"])[:120])
-                            if row.get("original_description"):
-                                st.caption(f"🇯🇵 {row['original_description']}")
-                            new_category = st.selectbox(
-                                "Category", all_categories, index=suggested_index, key=f"cat_{idx}"
-                            )
-                    else:
-                        col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 2, 1, 1, 1, 1])
-                        with col1:
-                            st.write(f"**📅 {date_str}**")
-                            st.write(f"**{row['description'][:40]}...**")
-                        with col2:
-                            if row.get("original_description"):
-                                st.write(f"**🇯🇵 {row['original_description'][:30]}...**")
-                            else:
-                                st.write("**No original description**")
-                        with col3:
+                    
+                    col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 2, 1, 1, 1, 1])
+                    with col1:
+                        # Show transaction date
+                        transaction_date = row.get('date', 'Unknown Date')
+                        if hasattr(transaction_date, 'strftime'):
+                            date_str = transaction_date.strftime('%Y-%m-%d')
+                        else:
+                            date_str = str(transaction_date)
+                        st.write(f"**📅 {date_str}**")
+                        st.write(f"**{row['description'][:40]}...**")
+                    with col2:
+                        # Show original description if available
+                        if row.get('original_description'):
+                            st.write(f"**🇯🇵 {row['original_description'][:30]}...**")
+                        else:
+                            st.write("**No original description**")
+                    with col3:
+                        try:
+                            # Safe index finding with fallback
+                            suggested_index = all_categories.index(suggested_category) if suggested_category in all_categories else 0
                             new_category = st.selectbox(
                                 f"Category for {row['description'][:25]}...",
                                 all_categories,
                                 index=suggested_index,
-                                key=f"cat_{idx}",
+                                key=f"cat_{idx}"
                             )
-                        with col4:
-                            st.write(f"**¥{row['amount']:,}**")
-                        with col5:
-                            trans_type = row.get("transaction_type", "Expense")
-                            st.write("🟢 **Credit**" if trans_type == "Credit" else "🔴 **Expense**")
-                        with col6:
-                            if "confidence" in row:
-                                confidence = row["confidence"]
-                                level = "High" if confidence >= 0.8 else "Med" if confidence >= 0.5 else "Low"
-                                st.write(f"**{level}** ({confidence:.0%})")
+                        except (ValueError, IndexError):
+                            # Fallback to first category if there's any issue
+                            new_category = st.selectbox(
+                                f"Category for {row['description'][:25]}...",
+                                all_categories,
+                                index=0,
+                                key=f"cat_{idx}"
+                            )
+                    with col4:
+                        st.write(f"**¥{row['amount']:,}**")
+                    with col5:
+                        # Show transaction type with color coding
+                        trans_type = row.get('transaction_type', 'Expense')
+                        if trans_type == 'Credit':
+                            st.write("🟢 **Credit**")
+                        else:
+                            st.write("🔴 **Expense**")
+                    with col6:
+                        # Show confidence score if available
+                        if 'confidence' in row:
+                            confidence = row['confidence']
+                            if confidence >= 0.8:
+                                st.write("🟢 **High**")
+                            elif confidence >= 0.5:
+                                st.write("🟡 **Med**")
                             else:
-                                st.write("⚪ **N/A**")
-                        with col7:
-                            if "timestamp" in row and row.get("timestamp"):
-                                ts = row["timestamp"]
-                                time_str = ts.strftime("%H:%M:%S") if hasattr(ts, "strftime") else str(ts)
-                                st.write(f"**⏰ {time_str}**")
+                                st.write("🔴 **Low**")
+                            st.write(f"**{confidence:.0%}**")
+                        else:
+                            st.write("⚪ **N/A**")
+                    with col7:
+                        # Show timestamp if available
+                        if 'timestamp' in row and row.get('timestamp'):
+                            timestamp = row['timestamp']
+                            if hasattr(timestamp, 'strftime'):
+                                time_str = timestamp.strftime('%H:%M:%S')
                             else:
-                                st.write("**⏰ N/A**")
-
-                    df_cat.loc[idx, "category"] = new_category
-
-                btn1, btn2, btn3 = layout_columns(3)
-                with btn1:
+                                time_str = str(timestamp)
+                            st.write(f"**⏰ {time_str}**")
+                        else:
+                            st.write("**⏰ N/A**")
+                    
+                    # Update the category
+                    df_cat.loc[idx, 'category'] = new_category
+                
+                # Add navigation and progress options
+                col1, col2, col3 = st.columns([1, 1, 1])
+                
+                with col1:
                     submitted = st.form_submit_button("✅ Apply All Categorizations")
-                with btn2:
+                
+                with col2:
                     save_progress = st.form_submit_button("💾 Save Progress & Continue Later")
-                with btn3:
+                
+                with col3:
                     skip_categorization = st.form_submit_button("⏭️ Skip & Review Results")
-
+                
                 # Handle form submissions
                 if submitted:
                     # Learn from user corrections if smart learning is available
@@ -3206,20 +3044,38 @@ def main() -> None:
         # Add quick filters for transactions
         st.divider()
         st.subheader("🔍 Filter Transactions")
-        filter_categories, filter_type, filter_currency, filter_search, _, _ = render_transaction_filters(
-            key_prefix="final",
-            category_options=(
-                sorted(display_df["category"].unique()) if "category" in display_df.columns else []
-            ),
-            type_options=(
-                display_df["transaction_type"].unique()
-                if "transaction_type" in display_df.columns
-                else []
-            ),
-            currency_options=(
-                sorted(display_df["currency"].unique()) if "currency" in display_df.columns else []
-            ),
-        )
+        filter_col1, filter_col2, filter_col3, filter_col4 = st.columns([1, 1, 1, 1])
+        
+        with filter_col1:
+            filter_categories = st.multiselect(
+                "Categories",
+                options=sorted(display_df['category'].unique()) if 'category' in display_df.columns else [],
+                default=None,
+                help="Select categories to filter (empty = show all)"
+            )
+        
+        with filter_col2:
+            filter_type = st.multiselect(
+                "Type",
+                options=display_df['transaction_type'].unique() if 'transaction_type' in display_df.columns else [],
+                default=None,
+                help="Filter by transaction type"
+            )
+        
+        with filter_col3:
+            filter_currency = st.multiselect(
+                "Currency",
+                options=sorted(display_df['currency'].unique()) if 'currency' in display_df.columns else [],
+                default=None,
+                help="Filter by currency"
+            )
+        
+        with filter_col4:
+            filter_search = st.text_input(
+                "Search Description",
+                placeholder="Search...",
+                help="Search in transaction descriptions"
+            )
         
         # Apply filters
         filtered_df = display_df.copy()
@@ -3240,7 +3096,7 @@ def main() -> None:
         final_desc_width = st.select_slider(
             "Description column width (final table)",
             options=["small", "medium", "large"],
-            value=default_description_column_width(),
+            value="large"
         )
         edited_df = st.data_editor(
             filtered_df,
@@ -3415,44 +3271,37 @@ def main() -> None:
                         
                         # Show each transaction in the group
                         for j, tx in enumerate(group):
-                            currency_symbol = "¥"
-                            badge = ""
-                            try:
-                                from data_store import get_existing_dedupe_hashes, compute_dedupe_hash
-                                dh = compute_dedupe_hash(str(tx["date"]), str(tx["description"]), float(tx["amount"]))
-                                existing = st.session_state.get(f"existing_hashes_{file_key}")
-                                if existing is None:
-                                    all_hashes = [
-                                        compute_dedupe_hash(str(t["date"]), str(t["description"]), float(t["amount"]))
-                                        for g in duplicates.values()
-                                        for t in g
-                                    ]
-                                    existing = get_existing_dedupe_hashes(all_hashes)
-                                    st.session_state[f"existing_hashes_{file_key}"] = existing
-                                badge = "  [saved]" if dh in existing else ""
-                            except Exception:
-                                pass
-                            tx_key = f"{file_key}_{i}_{j}_{tx['row']}"
-                            default_checked = bool(select_all)
-                            if use_compact_layout():
-                                st.write(
-                                    f"Row {tx['row']}: {tx['date']} | {tx['description']} | "
-                                    f"{currency_symbol}{tx['amount']:.2f}{badge}"
-                                )
-                                st.checkbox(f"Select (group {i})", key=f"select_{tx_key}", value=default_checked)
-                            else:
-                                col1, col2, col3, col4 = st.columns([4, 1, 1, 1])
-                                with col1:
-                                    st.write(
-                                        f"  • Row {tx['row']}: {tx['date']} | {tx['description']} | "
-                                        f"{currency_symbol}{tx['amount']:.2f}{badge}"
-                                    )
-                                with col2:
-                                    st.checkbox("Select", key=f"select_{tx_key}", value=default_checked)
-                                with col3:
-                                    st.caption("Duplicate")
-                                with col4:
-                                    st.caption("Group " + str(i))
+                            col1, col2, col3, col4 = st.columns([4, 1, 1, 1])
+                            
+                            with col1:
+                                currency_symbol = "¥"
+                                # Badge if exists already
+                                try:
+                                    from data_store import get_existing_dedupe_hashes, compute_dedupe_hash
+                                    dh = compute_dedupe_hash(str(tx['date']), str(tx['description']), float(tx['amount']))
+                                    existing = st.session_state.get(f"existing_hashes_{file_key}")
+                                    if existing is None:
+                                        # Build once per render
+                                        all_hashes = [compute_dedupe_hash(str(t['date']), str(t['description']), float(t['amount'])) for g in duplicates.values() for t in g]
+                                        existing = get_existing_dedupe_hashes(all_hashes)
+                                        st.session_state[f"existing_hashes_{file_key}"] = existing
+                                    # Plain ASCII to avoid any encoding/parsing issues in some environments
+                                    badge = ('  [saved]') if dh in existing else ''
+                                except Exception:
+                                    badge = ""
+                                st.write(f"  • Row {tx['row']}: {tx['date']} | {tx['description']} | {currency_symbol}{tx['amount']:.2f}{badge}")
+                            
+                            with col2:
+                                tx_key = f"{file_key}_{i}_{j}_{tx['row']}"
+                                # Checkbox state will be read on submit; no side-effects here
+                                default_checked = bool(select_all)
+                                st.checkbox("Select", key=f"select_{tx_key}", value=default_checked)
+                            
+                            with col3:
+                                st.caption("Duplicate")
+                            
+                            with col4:
+                                st.caption("Group " + str(i))
                         
                         st.caption(f"   Hash: {dedupe_hash[:16]}...")
                         st.divider()
@@ -3542,3 +3391,7 @@ def main() -> None:
 if __name__ == "__main__":
     main()
 
+
+
+def apply_smart_categorization(df, learning_system, rules, subcategories):
+    return apply_hybrid_categorization(df, learning_system, rules, subcategories)
