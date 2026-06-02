@@ -21,6 +21,14 @@ import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 import streamlit as st
+
+try:
+    from mobile_ui import layout_columns, use_compact_layout
+except ImportError:
+    def use_compact_layout():
+        return False
+    def layout_columns(count, *, weights=None):
+        return st.columns(count)
 from plotly.subplots import make_subplots
 
 
@@ -59,8 +67,7 @@ class ModernDashboard:
         expense_change = self._calculate_mom_change(expenses)
         income_change = self._calculate_mom_change(income)
         
-        # Create 4-column layout
-        col1, col2, col3, col4 = st.columns(4)
+        col1, col2, col3, col4 = layout_columns(4)
         
         with col1:
             self._render_metric_card(
@@ -147,17 +154,17 @@ class ModernDashboard:
             hovertemplate='<b>%{label}</b><br>¥%{value:,.0f}<br>%{percent}<extra></extra>'
         )])
         
+        legend_cfg = (
+            dict(orientation="h", yanchor="bottom", y=-0.25, xanchor="center", x=0.5)
+            if use_compact_layout()
+            else dict(orientation="v", yanchor="middle", y=0.5, xanchor="left", x=1.05)
+        )
         fig.update_layout(
             title="Spending by Category",
-            height=400,
+            height=320 if use_compact_layout() else 400,
             showlegend=True,
-            legend=dict(
-                orientation="v",
-                yanchor="middle",
-                y=0.5,
-                xanchor="left",
-                x=1.05
-            )
+            legend=legend_cfg,
+            margin=dict(b=80 if use_compact_layout() else 40),
         )
         
         st.plotly_chart(fig, use_container_width=True)
@@ -271,19 +278,19 @@ class ModernDashboard:
                 hovertemplate=f'<b>{category}</b><br>%{{x}}<br>¥%{{y:,.0f}}<extra></extra>'
             ))
         
+        legend_cfg = (
+            dict(orientation="h", yanchor="bottom", y=-0.3, xanchor="center", x=0.5)
+            if use_compact_layout()
+            else dict(orientation="v", yanchor="top", y=1, xanchor="left", x=1.02)
+        )
         fig.update_layout(
             title=f"Top {top_n} Categories - Monthly Trend",
             xaxis_title="Month",
             yaxis_title="Amount (¥)",
-            height=400,
+            height=320 if use_compact_layout() else 400,
             hovermode='x unified',
-            legend=dict(
-                orientation="v",
-                yanchor="top",
-                y=1,
-                xanchor="left",
-                x=1.02
-            )
+            legend=legend_cfg,
+            margin=dict(b=100 if use_compact_layout() else 40),
         )
         
         st.plotly_chart(fig, use_container_width=True)

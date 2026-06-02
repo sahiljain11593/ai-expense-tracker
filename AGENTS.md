@@ -2,25 +2,16 @@
 
 ## Cursor Cloud specific instructions
 
-### Run locally
+See README for install/run. Key commands: `source .venv/bin/activate`, `streamlit run transaction_web_app.py`, `pytest`.
 
-```bash
-source .venv/bin/activate
-streamlit run transaction_web_app.py --server.port 8501 --server.headless true
-```
+### Mobile browser testing
 
-One-time VM packages if venv fails: `sudo apt-get install -y python3.12-venv tesseract-ocr`
+- Open the sidebar → **📱 Mobile** → enable **Compact layout** on your phone.
+- CSS also stacks columns automatically under 768px width.
+- Sidebar starts **collapsed** so the main workflow is visible first.
+- Sample Streamlit config for LAN testing from a phone: copy `.streamlit/config.toml.example` to `.streamlit/config.toml` and set `server.address = "0.0.0.0"`.
 
-### Tests
+### Gotchas
 
-```bash
-pytest
-python scripts/e2e_check.py
-python demo_advanced_features.py
-```
-
-### Notes
-
-- `.streamlit/` is gitignored; minimal `secrets.toml` allows running without Firebase.
-- Dates from pandas DataFrames are normalized via `normalize_date_for_db()` before SQLite writes.
-- No repo linter configured (use `pytest` as the quality gate).
+- Pandas dates are normalized via `normalize_date_for_db()` before SQLite writes.
+- `.streamlit/` is gitignored; use `config.toml.example` as a template.

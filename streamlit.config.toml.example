@@ -1,0 +1,17 @@
+# Copy to .streamlit/config.toml (folder is gitignored) for local / remote dev.
+
+[browser]
+gatherUsageStats = false
+
+[client]
+toolbarMode = "minimal"
+
+[server]
+# Uncomment when running on your LAN so your phone can reach the dev machine:
+# address = "0.0.0.0"
+# port = 8501
+# enableCORS = false
+# enableXsrfProtection = true
+
+[theme]
+base = "light"
