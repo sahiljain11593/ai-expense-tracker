@@ -523,8 +523,8 @@ def insert_transactions(
                         inserted += 1
                     except sqlite3.IntegrityError:
                         # If override also collides (extremely unlikely), count as duplicate
-                dupes += 1
-                dupe_hashes.append(dedupe_hash)
+                        dupes += 1
+                        dupe_hashes.append(dedupe_hash)
                 else:
                     dupes += 1
                     dupe_hashes.append(dedupe_hash)
