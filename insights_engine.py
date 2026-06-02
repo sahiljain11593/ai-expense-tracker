@@ -428,6 +428,7 @@ class PatternAnalyzer:
             df = df.copy()
             df['date'] = pd.to_datetime(df['date'])
             df['day_of_week'] = df['date'].dt.day_name()
+            df['is_weekend'] = df['date'].dt.dayofweek >= 5
             
             expenses = df[df['amount'] < 0]
             
@@ -437,7 +438,6 @@ class PatternAnalyzer:
                 patterns['day_of_week'] = dow_spending.to_dict()
                 
                 # Weekend vs weekday
-                df['is_weekend'] = df['date'].dt.dayofweek >= 5
                 weekend_spending = expenses[expenses['is_weekend']]['amount'].sum()
                 weekday_spending = expenses[~expenses['is_weekend']]['amount'].sum()
                 
