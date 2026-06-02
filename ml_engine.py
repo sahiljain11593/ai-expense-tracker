@@ -103,6 +103,14 @@ class EnsembleCategorizationEngine:
         
         return category, subcategory, final_confidence, explanation
     
+    @staticmethod
+    def _category_from_prediction(pred) -> str:
+        """Extract category from raw model tuple or explanation dict entry."""
+        if isinstance(pred, dict):
+            return pred.get("category", "Uncategorised")
+        cat, _, _ = pred
+        return cat
+
     def learn_from_correction(
         self, 
         transaction: Dict, 
@@ -112,7 +120,8 @@ class EnsembleCategorizationEngine:
     ):
         """Update models based on user corrections."""
         # Update performance metrics
-        for model_name, (cat, _, _) in model_predictions.items():
+        for model_name, pred in model_predictions.items():
+            cat = self._category_from_prediction(pred)
             self.model_performance[model_name]['total'] += 1
             if cat == actual_category:
                 self.model_performance[model_name]['correct'] += 1

@@ -402,6 +402,18 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
         conn.close()
 
 
+def normalize_date_for_db(date_val) -> str:
+    """Convert date-like values (date, datetime, pandas Timestamp) to YYYY-MM-DD for SQLite."""
+    if date_val is None:
+        return ""
+    if hasattr(date_val, "strftime"):
+        return date_val.strftime("%Y-%m-%d")
+    text = str(date_val).strip()
+    if len(text) >= 10 and text[4] == "-" and text[7] == "-":
+        return text[:10]
+    return text
+
+
 def compute_dedupe_hash(date_str: str, description: str, amount: float) -> str:
     # Normalize description by trimming spaces and lowering
     normalized_desc = (description or "").strip().lower()
@@ -455,11 +467,7 @@ def insert_transactions(
     try:
         cur = conn.cursor()
         for r in rows:
-            date_val = r.get("date")
-            if hasattr(date_val, "strftime"):
-                date_str = date_val.strftime("%Y-%m-%d")
-            else:
-                date_str = str(date_val)
+            date_str = normalize_date_for_db(r.get("date"))
 
             dedupe_hash = compute_dedupe_hash(date_str, r.get("description", ""), float(r.get("amount", 0.0)))
             created_at = datetime.utcnow().isoformat(timespec="seconds")
@@ -896,11 +904,14 @@ def save_categorization_progress(
     try:
         cur = conn.cursor()
         
+        date_str = normalize_date_for_db(transaction_data.get("date"))
+        amount_val = float(transaction_data.get("amount", 0.0))
+
         # Create transaction hash for uniqueness
         transaction_hash = compute_dedupe_hash(
-            str(transaction_data['date']),
-            transaction_data['description'],
-            float(transaction_data['amount'])
+            date_str,
+            transaction_data.get("description", ""),
+            amount_val,
         )
         
         now = datetime.now().isoformat()
@@ -916,9 +927,9 @@ def save_categorization_progress(
             (
                 session_id,
                 transaction_hash,
-                transaction_data['date'],
-                transaction_data['description'],
-                transaction_data['amount'],
+                date_str,
+                transaction_data.get("description"),
+                amount_val,
                 transaction_data.get('category'),
                 transaction_data.get('subcategory'),
                 transaction_data.get('transaction_type'),
@@ -1206,6 +1217,9 @@ def learn_from_categorization(
     db_path: str = DEFAULT_DB_PATH
 ) -> None:
     """Learn from a user's categorization decision and store it persistently with contextual patterns."""
+    if date is not None:
+        date = normalize_date_for_db(date)
+
     conn = get_connection(db_path)
     try:
         cur = conn.cursor()
