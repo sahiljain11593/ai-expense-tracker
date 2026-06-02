@@ -160,19 +160,17 @@ class InsightsEngine:
         
         # Category insights
         if 'category' in df.columns and 'amount' in df.columns:
-            expenses = df[df['amount'] < 0].copy()
-            expenses = expenses[expenses['category'].notna() & (expenses['category'] != '')]
+            expenses = df[df['amount'] < 0]
             if not expenses.empty:
-                by_category = expenses.groupby('category')['amount'].sum().abs()
-                if not by_category.empty:
-                    top_category = by_category.idxmax()
-                    top_amount = by_category.max()
-                    total_expenses = abs(expenses['amount'].sum())
-                    percentage = (top_amount / total_expenses * 100) if total_expenses else 0
-                    insights.append(
-                        f"📊 Largest spending category: {top_category} "
-                        f"(¥{top_amount:,.0f}, {percentage:.1f}% of total)"
-                    )
+                top_category = expenses.groupby('category')['amount'].sum().abs().idxmax()
+                top_amount = expenses.groupby('category')['amount'].sum().abs().max()
+                total_expenses = expenses['amount'].sum()
+                percentage = (top_amount / abs(total_expenses)) * 100
+                
+                insights.append(
+                    f"📊 Largest spending category: {top_category} "
+                    f"(¥{top_amount:,.0f}, {percentage:.1f}% of total)"
+                )
         
         # Transaction frequency
         if 'date' in df.columns:
@@ -430,6 +428,7 @@ class PatternAnalyzer:
             df = df.copy()
             df['date'] = pd.to_datetime(df['date'])
             df['day_of_week'] = df['date'].dt.day_name()
+            df['is_weekend'] = df['date'].dt.dayofweek >= 5
             
             expenses = df[df['amount'] < 0]
             
@@ -439,7 +438,6 @@ class PatternAnalyzer:
                 patterns['day_of_week'] = dow_spending.to_dict()
                 
                 # Weekend vs weekday
-                df['is_weekend'] = df['date'].dt.dayofweek >= 5
                 weekend_spending = expenses[expenses['is_weekend']]['amount'].sum()
                 weekday_spending = expenses[~expenses['is_weekend']]['amount'].sum()
                 
