@@ -1249,7 +1249,7 @@ def learn_from_categorization(
                 """
                 INSERT OR REPLACE INTO merchant_context_learning
                 (merchant, context_key, context_value, category, subcategory, frequency, confidence_score, last_updated)
-                VALUES ('amount_range', ?, ?, ?, ?, 
+                VALUES (?, 'amount_range', ?, ?, ?,
                     COALESCE((SELECT frequency FROM merchant_context_learning WHERE merchant = ? AND context_key = 'amount_range' AND context_value = ? AND category = ? AND subcategory = ?), 0) + 1,
                     MIN(0.95, COALESCE((SELECT confidence_score FROM merchant_context_learning WHERE merchant = ? AND context_key = 'amount_range' AND context_value = ? AND category = ? AND subcategory = ?), 0.5) + 0.05),
                     ?)
@@ -1264,7 +1264,7 @@ def learn_from_categorization(
                 """
                 INSERT OR REPLACE INTO merchant_context_learning
                 (merchant, context_key, context_value, category, subcategory, frequency, confidence_score, last_updated)
-                VALUES ('day_of_week', ?, ?, ?, ?, 
+                VALUES (?, 'day_of_week', ?, ?, ?,
                     COALESCE((SELECT frequency FROM merchant_context_learning WHERE merchant = ? AND context_key = 'day_of_week' AND context_value = ? AND category = ? AND subcategory = ?), 0) + 1,
                     MIN(0.95, COALESCE((SELECT confidence_score FROM merchant_context_learning WHERE merchant = ? AND context_key = 'day_of_week' AND context_value = ? AND category = ? AND subcategory = ?), 0.5) + 0.05),
                     ?)
@@ -1279,7 +1279,7 @@ def learn_from_categorization(
                 """
                 INSERT OR REPLACE INTO merchant_context_learning
                 (merchant, context_key, context_value, category, subcategory, frequency, confidence_score, last_updated)
-                VALUES ('amount_pattern', ?, ?, ?, ?, 
+                VALUES (?, 'amount_pattern', ?, ?, ?,
                     COALESCE((SELECT frequency FROM merchant_context_learning WHERE merchant = ? AND context_key = 'amount_pattern' AND context_value = ? AND category = ? AND subcategory = ?), 0) + 1,
                     MIN(0.95, COALESCE((SELECT confidence_score FROM merchant_context_learning WHERE merchant = ? AND context_key = 'amount_pattern' AND context_value = ? AND category = ? AND subcategory = ?), 0.5) + 0.05),
                     ?)

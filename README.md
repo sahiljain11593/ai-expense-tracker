@@ -136,6 +136,18 @@ streamlit run transaction_web_app.py
 
 #### Step 2: Configure Secrets (Settings → Secrets)
 
+**Gemini AI Translation** (Recommended default; free tier available):
+```toml
+[gemini]
+api_key = "YOUR_GEMINI_API_KEY"
+```
+
+**OpenAI Translation** (Optional alternative):
+```toml
+[openai]
+api_key = "YOUR_OPENAI_API_KEY"
+```
+
 **Firebase Authentication** (Optional - for single-user access control):
 ```toml
 [firebase]

@@ -32,6 +32,41 @@ except ImportError:
 from plotly.subplots import make_subplots
 
 
+def _amount_column(df: pd.DataFrame) -> Optional[str]:
+    if 'amount_jpy' in df.columns:
+        return 'amount_jpy'
+    if 'amount' in df.columns:
+        return 'amount'
+    return None
+
+
+def _with_analysis_amount(df: pd.DataFrame) -> pd.DataFrame:
+    amount_col = _amount_column(df)
+    result = df.copy()
+    if amount_col:
+        result['_analysis_amount'] = pd.to_numeric(result[amount_col], errors='coerce').fillna(0)
+        result['_spend_amount'] = result['_analysis_amount'].abs()
+    return result
+
+
+def _expense_rows(df: pd.DataFrame) -> pd.DataFrame:
+    result = _with_analysis_amount(df)
+    if '_analysis_amount' not in result.columns:
+        return pd.DataFrame()
+    if 'transaction_type' in result.columns:
+        return result[result['transaction_type'].fillna('').eq('Expense')].copy()
+    return result[result['_analysis_amount'] < 0].copy()
+
+
+def _income_rows(df: pd.DataFrame) -> pd.DataFrame:
+    result = _with_analysis_amount(df)
+    if '_analysis_amount' not in result.columns:
+        return pd.DataFrame()
+    if 'transaction_type' in result.columns:
+        return result[result['transaction_type'].fillna('').eq('Credit')].copy()
+    return result[result['_analysis_amount'] > 0].copy()
+
+
 class ModernDashboard:
     """Modern dashboard with enhanced visualizations and metrics."""
     
@@ -55,12 +90,12 @@ class ModernDashboard:
         
         df = pd.DataFrame(transactions)
         
-        # Calculate metrics
-        expenses = df[df['amount'] < 0] if 'amount' in df.columns else pd.DataFrame()
-        income = df[df['amount'] > 0] if 'amount' in df.columns else pd.DataFrame()
+        # Calculate metrics using transaction type when available.
+        expenses = _expense_rows(df)
+        income = _income_rows(df)
         
-        total_expenses = abs(expenses['amount'].sum()) if not expenses.empty else 0
-        total_income = income['amount'].sum() if not income.empty else 0
+        total_expenses = expenses['_spend_amount'].sum() if not expenses.empty else 0
+        total_income = income['_spend_amount'].sum() if not income.empty else 0
         net_balance = total_income - total_expenses
         
         # Calculate month-over-month changes
@@ -135,14 +170,14 @@ class ModernDashboard:
             return
         
         df = pd.DataFrame(transactions)
-        expenses = df[df['amount'] < 0].copy() if 'amount' in df.columns else pd.DataFrame()
+        expenses = _expense_rows(df)
         
         if expenses.empty or 'category' not in expenses.columns:
             st.info("No categorized expenses to display")
             return
         
         # Aggregate by category
-        category_totals = expenses.groupby('category')['amount'].sum().abs().sort_values(ascending=False)
+        category_totals = expenses.groupby('category')['_spend_amount'].sum().sort_values(ascending=False)
         
         # Create interactive pie chart
         fig = go.Figure(data=[go.Pie(
@@ -176,19 +211,23 @@ class ModernDashboard:
         
         df = pd.DataFrame(transactions)
         
-        if 'date' not in df.columns or 'amount' not in df.columns:
+        if 'date' not in df.columns or _amount_column(df) is None:
             return
         
         df['date'] = pd.to_datetime(df['date'])
         df['month'] = df['date'].dt.to_period('M').astype(str)
         
         # Separate expenses and income
-        expenses = df[df['amount'] < 0].copy()
-        income = df[df['amount'] > 0].copy()
+        expenses = _expense_rows(df)
+        income = _income_rows(df)
+        if not expenses.empty:
+            expenses['month'] = pd.to_datetime(expenses['date']).dt.to_period('M').astype(str)
+        if not income.empty:
+            income['month'] = pd.to_datetime(income['date']).dt.to_period('M').astype(str)
         
         # Monthly aggregates
-        monthly_expenses = expenses.groupby('month')['amount'].sum().abs() if not expenses.empty else pd.Series()
-        monthly_income = income.groupby('month')['amount'].sum() if not income.empty else pd.Series()
+        monthly_expenses = expenses.groupby('month')['_spend_amount'].sum() if not expenses.empty else pd.Series()
+        monthly_income = income.groupby('month')['_spend_amount'].sum() if not income.empty else pd.Series()
         
         # Get all months
         all_months = sorted(set(list(monthly_expenses.index) + list(monthly_income.index)))
@@ -246,25 +285,27 @@ class ModernDashboard:
         
         df = pd.DataFrame(transactions)
         
-        if 'date' not in df.columns or 'amount' not in df.columns or 'category' not in df.columns:
+        if 'date' not in df.columns or _amount_column(df) is None or 'category' not in df.columns:
             return
         
         df['date'] = pd.to_datetime(df['date'])
         df['month'] = df['date'].dt.to_period('M').astype(str)
         
-        expenses = df[df['amount'] < 0].copy()
+        expenses = _expense_rows(df)
+        if not expenses.empty:
+            expenses['month'] = pd.to_datetime(expenses['date']).dt.to_period('M').astype(str)
         
         if expenses.empty:
             return
         
         # Get top N categories by total spending
-        top_categories = expenses.groupby('category')['amount'].sum().abs().nlargest(top_n).index
+        top_categories = expenses.groupby('category')['_spend_amount'].sum().nlargest(top_n).index
         
         # Filter for top categories
         top_expenses = expenses[expenses['category'].isin(top_categories)]
         
         # Monthly spending by category
-        category_monthly = top_expenses.groupby(['month', 'category'])['amount'].sum().abs().unstack(fill_value=0)
+        category_monthly = top_expenses.groupby(['month', 'category'])['_spend_amount'].sum().unstack(fill_value=0)
         
         # Create line chart
         fig = go.Figure()
@@ -302,19 +343,22 @@ class ModernDashboard:
         
         df = pd.DataFrame(transactions)
         
-        if 'date' not in df.columns or 'amount' not in df.columns:
+        if 'date' not in df.columns or _amount_column(df) is None:
             return
         
         df['date'] = pd.to_datetime(df['date'])
         df['day_of_week'] = df['date'].dt.day_name()
         
-        expenses = df[df['amount'] < 0].copy()
+        expenses = _expense_rows(df)
+        if not expenses.empty:
+            expenses['date'] = pd.to_datetime(expenses['date'])
+            expenses['day_of_week'] = expenses['date'].dt.day_name()
         
         if expenses.empty:
             return
         
         # Aggregate by day of week
-        dow_spending = expenses.groupby('day_of_week')['amount'].sum().abs()
+        dow_spending = expenses.groupby('day_of_week')['_spend_amount'].sum()
         
         # Order days
         day_order = ['Monday', 'Tuesday', 'Wednesday', 'Thursday', 'Friday', 'Saturday', 'Sunday']
@@ -346,16 +390,16 @@ class ModernDashboard:
         
         df = pd.DataFrame(transactions)
         
-        if 'description' not in df.columns or 'amount' not in df.columns:
+        if 'description' not in df.columns or _amount_column(df) is None:
             return
         
-        expenses = df[df['amount'] < 0].copy()
+        expenses = _expense_rows(df)
         
         if expenses.empty:
             return
         
         # Top merchants
-        top_merchants = expenses.groupby('description')['amount'].sum().abs().nlargest(top_n)
+        top_merchants = expenses.groupby('description')['_spend_amount'].sum().nlargest(top_n)
         
         # Create horizontal bar chart
         fig = go.Figure(data=[
@@ -414,7 +458,7 @@ class ModernDashboard:
         
         df = pd.DataFrame(transactions)
         
-        if 'date' not in df.columns or 'amount' not in df.columns:
+        if 'date' not in df.columns or _amount_column(df) is None:
             return
         
         df['date'] = pd.to_datetime(df['date'])
@@ -431,8 +475,10 @@ class ModernDashboard:
             return
         
         # Calculate metrics
-        current_expenses = abs(current_data[current_data['amount'] < 0]['amount'].sum())
-        previous_expenses = abs(previous_data[previous_data['amount'] < 0]['amount'].sum())
+        current_expense_rows = _expense_rows(current_data)
+        previous_expense_rows = _expense_rows(previous_data)
+        current_expenses = current_expense_rows['_spend_amount'].sum() if not current_expense_rows.empty else 0
+        previous_expenses = previous_expense_rows['_spend_amount'].sum() if not previous_expense_rows.empty else 0
         
         change_pct = ((current_expenses - previous_expenses) / previous_expenses * 100) if previous_expenses > 0 else 0
         
@@ -463,14 +509,16 @@ class ModernDashboard:
     
     def _calculate_mom_change(self, df: pd.DataFrame) -> Optional[float]:
         """Calculate month-over-month percentage change."""
-        if df.empty or 'date' not in df.columns or 'amount' not in df.columns:
+        if df.empty or 'date' not in df.columns or _amount_column(df) is None:
             return None
         
         df = df.copy()
         df['date'] = pd.to_datetime(df['date'])
         df['month'] = df['date'].dt.to_period('M')
         
-        monthly_totals = df.groupby('month')['amount'].sum()
+        if '_spend_amount' not in df.columns:
+            df = _with_analysis_amount(df)
+        monthly_totals = df.groupby('month')['_spend_amount'].sum()
         
         if len(monthly_totals) < 2:
             return None

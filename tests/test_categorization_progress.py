@@ -39,3 +39,40 @@ def test_save_categorization_progress_with_pandas_timestamp(tmp_path):
     assert len(rows) == 1
     assert rows[0]["date"] == "2025-08-16"
     assert rows[0]["category"] == "Food"
+
+
+def test_contextual_learning_uses_real_merchant(tmp_path):
+    """Contextual merchant suggestions should be stored under the merchant name."""
+    from data_store import get_connection, get_learning_suggestions, learn_from_categorization
+
+    db_path = str(tmp_path / "learning.db")
+    init_db(db_path)
+
+    learn_from_categorization(
+        description="Lawson Shibuya",
+        category="Food",
+        subcategory="Groceries",
+        amount=850,
+        date="2025-01-06",
+        db_path=db_path,
+    )
+
+    conn = get_connection(db_path)
+    try:
+        rows = conn.execute(
+            "SELECT merchant, context_key FROM merchant_context_learning ORDER BY context_key"
+        ).fetchall()
+    finally:
+        conn.close()
+
+    assert rows
+    assert {row["merchant"] for row in rows} == {"lawson shibuya"}
+    assert "amount_range" in {row["context_key"] for row in rows}
+
+    suggestions = get_learning_suggestions(
+        "Lawson Shibuya",
+        amount=820,
+        date="2025-01-13",
+        db_path=db_path,
+    )
+    assert any(s["category"] == "Food" for s in suggestions)
