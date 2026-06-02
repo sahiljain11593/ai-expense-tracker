@@ -23,6 +23,45 @@ import numpy as np
 import pandas as pd
 
 
+def _amount_column(df: pd.DataFrame) -> Optional[str]:
+    if 'amount_jpy' in df.columns:
+        return 'amount_jpy'
+    if 'amount' in df.columns:
+        return 'amount'
+    return None
+
+
+def _with_analysis_amount(df: pd.DataFrame) -> pd.DataFrame:
+    amount_col = _amount_column(df)
+    result = df.copy()
+    if amount_col:
+        result['_analysis_amount'] = pd.to_numeric(result[amount_col], errors='coerce').fillna(0)
+        result['_spend_amount'] = result['_analysis_amount'].abs()
+    return result
+
+
+def _expense_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    result = _with_analysis_amount(df)
+    if '_analysis_amount' not in result.columns:
+        return pd.DataFrame()
+    if 'transaction_type' in result.columns:
+        return result[result['transaction_type'].fillna('').eq('Expense')].copy()
+    return result[result['_analysis_amount'] < 0].copy()
+
+
+def _income_rows(df: pd.DataFrame) -> pd.DataFrame:
+    if df.empty:
+        return df.copy()
+    result = _with_analysis_amount(df)
+    if '_analysis_amount' not in result.columns:
+        return pd.DataFrame()
+    if 'transaction_type' in result.columns:
+        return result[result['transaction_type'].fillna('').eq('Credit')].copy()
+    return result[result['_analysis_amount'] > 0].copy()
+
+
 class InsightsEngine:
     """
     Main insights engine that generates comprehensive financial reports
@@ -76,16 +115,19 @@ class InsightsEngine:
     
     def _generate_summary(self, df: pd.DataFrame) -> Dict:
         """Generate high-level summary statistics."""
-        total_expenses = df[df['amount'] < 0]['amount'].sum() if 'amount' in df.columns else 0
-        total_income = df[df['amount'] > 0]['amount'].sum() if 'amount' in df.columns else 0
+        analysis_df = _with_analysis_amount(df)
+        expenses = _expense_rows(df)
+        income = _income_rows(df)
+        total_expenses = expenses['_spend_amount'].sum() if not expenses.empty else 0
+        total_income = income['_spend_amount'].sum() if not income.empty else 0
         
         return {
             'total_transactions': len(df),
-            'total_expenses': abs(total_expenses),
+            'total_expenses': total_expenses,
             'total_income': total_income,
-            'net_cashflow': total_income + total_expenses,
-            'average_transaction': df['amount'].mean() if 'amount' in df.columns else 0,
-            'largest_expense': df['amount'].min() if 'amount' in df.columns else 0,
+            'net_cashflow': total_income - total_expenses,
+            'average_transaction': analysis_df['_analysis_amount'].mean() if '_analysis_amount' in analysis_df.columns else 0,
+            'largest_expense': expenses['_spend_amount'].max() if not expenses.empty else 0,
             'number_of_categories': df['category'].nunique() if 'category' in df.columns else 0,
             'date_range': {
                 'start': df['date'].min() if 'date' in df.columns else None,
@@ -95,29 +137,30 @@ class InsightsEngine:
     
     def _analyze_categories(self, df: pd.DataFrame) -> Dict:
         """Analyze spending by category."""
-        if 'category' not in df.columns or 'amount' in df.columns:
+        if 'category' not in df.columns or _amount_column(df) is None:
             return {}
         
         # Filter expenses only
-        expenses = df[df['amount'] < 0].copy()
+        expenses = _expense_rows(df)
         
         if expenses.empty:
             return {}
         
         # Group by category
         category_stats = expenses.groupby('category').agg({
-            'amount': ['sum', 'mean', 'count', 'std']
+            '_spend_amount': ['sum', 'mean', 'count', 'std']
         }).round(2)
+        total_spending = expenses['_spend_amount'].sum()
         
         # Convert to dictionary
         result = {}
         for category in category_stats.index:
             result[category] = {
-                'total_spent': abs(category_stats.loc[category, ('amount', 'sum')]),
-                'average_transaction': abs(category_stats.loc[category, ('amount', 'mean')]),
-                'transaction_count': int(category_stats.loc[category, ('amount', 'count')]),
-                'std_deviation': category_stats.loc[category, ('amount', 'std')],
-                'percentage_of_total': abs(category_stats.loc[category, ('amount', 'sum')] / expenses['amount'].sum() * 100)
+                'total_spent': category_stats.loc[category, ('_spend_amount', 'sum')],
+                'average_transaction': category_stats.loc[category, ('_spend_amount', 'mean')],
+                'transaction_count': int(category_stats.loc[category, ('_spend_amount', 'count')]),
+                'std_deviation': category_stats.loc[category, ('_spend_amount', 'std')],
+                'percentage_of_total': (category_stats.loc[category, ('_spend_amount', 'sum')] / total_spending * 100) if total_spending else 0
             }
         
         # Sort by total spent
@@ -150,21 +193,22 @@ class InsightsEngine:
             return insights
         
         # Spending velocity
-        if 'date' in df.columns and 'amount' in df.columns:
+        if 'date' in df.columns and _amount_column(df) is not None:
             df['date'] = pd.to_datetime(df['date'])
-            expenses = df[df['amount'] < 0]
+            expenses = _expense_rows(df)
             
             if not expenses.empty:
-                daily_spending = expenses.groupby('date')['amount'].sum().abs().mean()
+                daily_spending = expenses.groupby('date')['_spend_amount'].sum().mean()
                 insights.append(f"💰 Average daily spending: ¥{daily_spending:,.0f}")
         
         # Category insights
-        if 'category' in df.columns and 'amount' in df.columns:
-            expenses = df[df['amount'] < 0]
+        if 'category' in df.columns and _amount_column(df) is not None:
+            expenses = _expense_rows(df)
             if not expenses.empty:
-                top_category = expenses.groupby('category')['amount'].sum().abs().idxmax()
-                top_amount = expenses.groupby('category')['amount'].sum().abs().max()
-                total_expenses = expenses['amount'].sum()
+                by_category = expenses.groupby('category')['_spend_amount'].sum()
+                top_category = by_category.idxmax()
+                top_amount = by_category.max()
+                total_expenses = expenses['_spend_amount'].sum()
                 percentage = (top_amount / abs(total_expenses)) * 100
                 
                 insights.append(
@@ -200,7 +244,7 @@ class TrendAnalyzer:
     
     def analyze_monthly_trends(self, df: pd.DataFrame) -> Dict:
         """Analyze month-over-month spending trends."""
-        if 'date' not in df.columns or 'amount' not in df.columns:
+        if 'date' not in df.columns or _amount_column(df) is None:
             return {}
         
         df = df.copy()
@@ -208,13 +252,15 @@ class TrendAnalyzer:
         df['month'] = df['date'].dt.to_period('M')
         
         # Filter expenses
-        expenses = df[df['amount'] < 0].copy()
+        expenses = _expense_rows(df)
+        if not expenses.empty:
+            expenses['month'] = pd.to_datetime(expenses['date']).dt.to_period('M')
         
         if expenses.empty:
             return {}
         
         # Monthly totals
-        monthly_totals = expenses.groupby('month')['amount'].sum().abs()
+        monthly_totals = expenses.groupby('month')['_spend_amount'].sum()
         
         # Calculate trends
         if len(monthly_totals) < 2:
@@ -244,20 +290,22 @@ class TrendAnalyzer:
     
     def forecast_spending(self, df: pd.DataFrame, months_ahead: int = 3) -> Dict:
         """Forecast future spending based on historical trends."""
-        if 'date' not in df.columns or 'amount' not in df.columns:
+        if 'date' not in df.columns or _amount_column(df) is None:
             return {}
         
         df = df.copy()
         df['date'] = pd.to_datetime(df['date'])
         df['month'] = df['date'].dt.to_period('M')
         
-        expenses = df[df['amount'] < 0].copy()
+        expenses = _expense_rows(df)
+        if not expenses.empty:
+            expenses['month'] = pd.to_datetime(expenses['date']).dt.to_period('M')
         
         if expenses.empty:
             return {}
         
         # Monthly totals
-        monthly_totals = expenses.groupby('month')['amount'].sum().abs()
+        monthly_totals = expenses.groupby('month')['_spend_amount'].sum()
         
         if len(monthly_totals) < 3:
             # Not enough data for forecasting
@@ -298,32 +346,32 @@ class AnomalyDetector:
     
     def detect_anomalies(self, df: pd.DataFrame) -> List[Dict]:
         """Detect anomalous transactions."""
-        if 'amount' not in df.columns:
+        if _amount_column(df) is None:
             return []
         
         anomalies = []
         
-        expenses = df[df['amount'] < 0].copy()
+        expenses = _expense_rows(df)
         
         if expenses.empty or len(expenses) < 10:
             return anomalies
         
         # Statistical anomaly detection
-        mean_amount = expenses['amount'].abs().mean()
-        std_amount = expenses['amount'].abs().std()
+        mean_amount = expenses['_spend_amount'].mean()
+        std_amount = expenses['_spend_amount'].std()
         
         # Transactions beyond 2 standard deviations
         threshold = mean_amount + (2 * std_amount)
         
-        unusual_transactions = expenses[expenses['amount'].abs() > threshold]
+        unusual_transactions = expenses[expenses['_spend_amount'] > threshold]
         
         for _, trans in unusual_transactions.iterrows():
             anomalies.append({
                 'type': 'unusually_large',
                 'transaction': trans.to_dict(),
-                'amount': trans['amount'],
-                'severity': 'high' if abs(trans['amount']) > mean_amount + (3 * std_amount) else 'medium',
-                'reason': f"Transaction amount (¥{abs(trans['amount']):,.0f}) is {((abs(trans['amount']) / mean_amount) - 1) * 100:.0f}% above average"
+                'amount': trans['_spend_amount'],
+                'severity': 'high' if trans['_spend_amount'] > mean_amount + (3 * std_amount) else 'medium',
+                'reason': f"Transaction amount (¥{trans['_spend_amount']:,.0f}) is {((trans['_spend_amount'] / mean_amount) - 1) * 100:.0f}% above average"
             })
         
         # Frequency anomalies
@@ -334,11 +382,11 @@ class AnomalyDetector:
             for merchant, count in merchant_freq.items():
                 if count == 1:
                     trans = expenses[expenses['description'] == merchant].iloc[0]
-                    if abs(trans['amount']) > mean_amount * 1.5:
+                    if trans['_spend_amount'] > mean_amount * 1.5:
                         anomalies.append({
                             'type': 'one_time_large_expense',
                             'transaction': trans.to_dict(),
-                            'amount': trans['amount'],
+                            'amount': trans['_spend_amount'],
                             'severity': 'low',
                             'reason': f"First-time large expense at {merchant}"
                         })
@@ -353,16 +401,16 @@ class BudgetAdvisor:
         """Generate budget recommendations."""
         recommendations = []
         
-        if 'category' not in df.columns or 'amount' not in df.columns:
+        if 'category' not in df.columns or _amount_column(df) is None:
             return recommendations
         
-        expenses = df[df['amount'] < 0].copy()
+        expenses = _expense_rows(df)
         
         if expenses.empty:
             return recommendations
         
         # Analyze spending by category
-        category_spending = expenses.groupby('category')['amount'].sum().abs()
+        category_spending = expenses.groupby('category')['_spend_amount'].sum()
         total_spending = category_spending.sum()
         
         # Identify overspending categories (>30% of budget)
@@ -384,19 +432,19 @@ class BudgetAdvisor:
         # Identify frequent small transactions
         if 'description' in df.columns:
             merchant_stats = expenses.groupby('description').agg({
-                'amount': ['count', 'sum', 'mean']
+                '_spend_amount': ['count', 'sum', 'mean']
             })
             
             # Find merchants with frequent small purchases
             frequent_small = merchant_stats[
-                (merchant_stats[('amount', 'count')] >= 10) &
-                (merchant_stats[('amount', 'mean')].abs() < 1000)
+                (merchant_stats[('_spend_amount', 'count')] >= 10) &
+                (merchant_stats[('_spend_amount', 'mean')] < 1000)
             ]
             
             for merchant in frequent_small.head(3).index:
-                count = int(frequent_small.loc[merchant, ('amount', 'count')])
-                total = abs(frequent_small.loc[merchant, ('amount', 'sum')])
-                avg = abs(frequent_small.loc[merchant, ('amount', 'mean')])
+                count = int(frequent_small.loc[merchant, ('_spend_amount', 'count')])
+                total = frequent_small.loc[merchant, ('_spend_amount', 'sum')]
+                avg = frequent_small.loc[merchant, ('_spend_amount', 'mean')]
                 
                 recommendations.append({
                     'type': 'frequency_optimization',
@@ -424,44 +472,50 @@ class PatternAnalyzer:
             return patterns
         
         # Day of week patterns
-        if 'date' in df.columns and 'amount' in df.columns:
+        if 'date' in df.columns and _amount_column(df) is not None:
             df = df.copy()
             df['date'] = pd.to_datetime(df['date'])
             df['day_of_week'] = df['date'].dt.day_name()
             df['is_weekend'] = df['date'].dt.dayofweek >= 5
             
-            expenses = df[df['amount'] < 0]
+            expenses = _expense_rows(df)
+            if not expenses.empty:
+                expenses['date'] = pd.to_datetime(expenses['date'])
+                expenses['day_of_week'] = expenses['date'].dt.day_name()
+                expenses['is_weekend'] = expenses['date'].dt.dayofweek >= 5
             
             if not expenses.empty:
                 # Spending by day of week
-                dow_spending = expenses.groupby('day_of_week')['amount'].sum().abs()
+                dow_spending = expenses.groupby('day_of_week')['_spend_amount'].sum()
                 patterns['day_of_week'] = dow_spending.to_dict()
                 
                 # Weekend vs weekday
-                weekend_spending = expenses[expenses['is_weekend']]['amount'].sum()
-                weekday_spending = expenses[~expenses['is_weekend']]['amount'].sum()
+                weekend_spending = expenses[expenses['is_weekend']]['_spend_amount'].sum()
+                weekday_spending = expenses[~expenses['is_weekend']]['_spend_amount'].sum()
+                total_spending = weekend_spending + weekday_spending
                 
                 patterns['weekend_vs_weekday'] = {
-                    'weekend': abs(weekend_spending),
-                    'weekday': abs(weekday_spending),
-                    'weekend_percentage': abs(weekend_spending) / (abs(weekend_spending) + abs(weekday_spending)) * 100
+                    'weekend': weekend_spending,
+                    'weekday': weekday_spending,
+                    'weekend_percentage': weekend_spending / total_spending * 100 if total_spending else 0
                 }
         
         # Time of month patterns
-        if 'date' in df.columns:
-            df['day_of_month'] = pd.to_datetime(df['date']).dt.day
-            expenses = df[df['amount'] < 0]
+        if 'date' in df.columns and _amount_column(df) is not None:
+            expenses = _expense_rows(df)
+            if not expenses.empty:
+                expenses['day_of_month'] = pd.to_datetime(expenses['date']).dt.day
             
             if not expenses.empty:
                 # Early, mid, late month spending
-                early_month = expenses[df['day_of_month'] <= 10]['amount'].sum()
-                mid_month = expenses[(df['day_of_month'] > 10) & (df['day_of_month'] <= 20)]['amount'].sum()
-                late_month = expenses[df['day_of_month'] > 20]['amount'].sum()
+                early_month = expenses[expenses['day_of_month'] <= 10]['_spend_amount'].sum()
+                mid_month = expenses[(expenses['day_of_month'] > 10) & (expenses['day_of_month'] <= 20)]['_spend_amount'].sum()
+                late_month = expenses[expenses['day_of_month'] > 20]['_spend_amount'].sum()
                 
                 patterns['time_of_month'] = {
-                    'early_month': abs(early_month),
-                    'mid_month': abs(mid_month),
-                    'late_month': abs(late_month)
+                    'early_month': early_month,
+                    'mid_month': mid_month,
+                    'late_month': late_month
                 }
         
         return patterns
@@ -494,15 +548,15 @@ class SpendingAnalytics:
     @staticmethod
     def prepare_category_chart_data(df: pd.DataFrame) -> Dict:
         """Prepare data for category spending chart."""
-        if 'category' not in df.columns or 'amount' not in df.columns:
+        if 'category' not in df.columns or _amount_column(df) is None:
             return {}
         
-        expenses = df[df['amount'] < 0].copy()
+        expenses = _expense_rows(df)
         
         if expenses.empty:
             return {}
         
-        category_totals = expenses.groupby('category')['amount'].sum().abs()
+        category_totals = expenses.groupby('category')['_spend_amount'].sum()
         
         return {
             'labels': category_totals.index.tolist(),
@@ -513,18 +567,22 @@ class SpendingAnalytics:
     @staticmethod
     def prepare_monthly_trend_data(df: pd.DataFrame) -> Dict:
         """Prepare data for monthly trend chart."""
-        if 'date' not in df.columns or 'amount' not in df.columns:
+        if 'date' not in df.columns or _amount_column(df) is None:
             return {}
         
         df = df.copy()
         df['date'] = pd.to_datetime(df['date'])
         df['month'] = df['date'].dt.to_period('M').astype(str)
         
-        expenses = df[df['amount'] < 0].copy()
-        income = df[df['amount'] > 0].copy()
+        expenses = _expense_rows(df)
+        income = _income_rows(df)
+        if not expenses.empty:
+            expenses['month'] = pd.to_datetime(expenses['date']).dt.to_period('M').astype(str)
+        if not income.empty:
+            income['month'] = pd.to_datetime(income['date']).dt.to_period('M').astype(str)
         
-        monthly_expenses = expenses.groupby('month')['amount'].sum().abs() if not expenses.empty else pd.Series()
-        monthly_income = income.groupby('month')['amount'].sum() if not income.empty else pd.Series()
+        monthly_expenses = expenses.groupby('month')['_spend_amount'].sum() if not expenses.empty else pd.Series()
+        monthly_income = income.groupby('month')['_spend_amount'].sum() if not income.empty else pd.Series()
         
         # Combine all months
         all_months = sorted(set(monthly_expenses.index.tolist() + monthly_income.index.tolist()))
@@ -542,11 +600,11 @@ class SpendingAnalytics:
         if df.empty:
             return {}
         
-        expenses = df[df['amount'] < 0] if 'amount' in df.columns else pd.DataFrame()
-        income = df[df['amount'] > 0] if 'amount' in df.columns else pd.DataFrame()
+        expenses = _expense_rows(df)
+        income = _income_rows(df)
         
-        total_expenses = abs(expenses['amount'].sum()) if not expenses.empty else 0
-        total_income = income['amount'].sum() if not income.empty else 0
+        total_expenses = expenses['_spend_amount'].sum() if not expenses.empty else 0
+        total_income = income['_spend_amount'].sum() if not income.empty else 0
         
         return {
             'total_expenses': total_expenses,

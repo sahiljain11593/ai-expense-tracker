@@ -1,7 +1,7 @@
 # AI Expense Tracker — Roadmap & Checklist
 
-**Last updated:** May 8, 2026
-**Current state:** Multi-provider AI (OpenAI + Gemini) integrated. P0 urgent fixes from the Opus 4.7 code review are complete.
+**Last updated:** June 2, 2026
+**Current state:** Gemini 3.1 Flash-Lite is integrated as the default AI translation path, with OpenAI and free fallback still available. P0 audit stabilization is complete.
 
 This document is the source of truth for what's done, what's next, and how to verify each change. Update the checkboxes as items land.
 
@@ -21,15 +21,15 @@ This document is the source of truth for what's done, what's next, and how to ve
 
 ## P0 — Correctness (DONE)
 
-These were the must-fixes from the Opus 4.7 review.
+These were the must-fixes from the June 2026 audit.
 
-- [x] **H1/H2 — Provider-aware key & model defaults.** `_default_key_for()` / `_default_model_for()` resolve based on the selected provider; no more silent OpenAI fallback when Gemini is selected.
-- [x] **H3 — Empty Gemini response guard.** `_gemini_call()` disables thinking via `ThinkingConfig(thinking_budget=0)`, raises a clear error if `response.text` is empty, and uses larger token budgets (`max(800, 80*N)` translation, `max(1500, 120*N)` categorization).
-- [x] **H4 — Exponential backoff retry.** `_ai_generate()` retries up to 3 times for 429/5xx/network errors with `1s + 2s + 4s + jitter`.
-- [x] **M9 — Subcategory validation.** Categorization now drops subcategories that don't belong to their parent.
-- [x] **L16 — Repo cleanup.** Stray `https:/aistudio.google.com/` directory removed; `.gitignore` updated.
-- [x] **Model upgrade.** Added `gemini-3.1-flash-lite` (Google's newest, free-tier, optimized for translation) as the default Gemini model.
-- [x] **Merchant-protection fix.** `[[BRAND_N]]` placeholder tokens caused the model to copy translations across rows in batch mode (every row looked structurally identical). Replaced with inline English-name substitution for batch translation via new helper `protect_known_merchants_inline`. Smoke test now hits **10/10 merchant recognition** vs 4/10 before.
+- [x] **Gemini translation default.** Added `gemini-3.1-flash-lite` as the default AI translation model and kept OpenAI/free fallback as selectable options.
+- [x] **Provider-aware key & model defaults.** `_default_key_for()` / `_default_model_for()` resolve Gemini and OpenAI keys from Streamlit secrets, environment variables, or session input.
+- [x] **Smoke-test contract restored.** `translate_batch_ai()` and `categorise_transactions_ai()` exist again so automated AI-path smoke tests do not drift ahead of the app.
+- [x] **Insights category bug fixed.** Category analysis no longer returns early whenever `amount` exists.
+- [x] **Positive-expense analytics fixed.** Dashboard and insights now prefer `transaction_type` plus `amount_jpy`, so Japanese statements with positive debit amounts are counted as expenses.
+- [x] **Contextual learning fixed.** `merchant_context_learning` rows are stored under the real merchant instead of literal context names like `amount_range`.
+- [x] **Repo cleanup.** `.venv/` is ignored.
 
 ---
 
@@ -55,11 +55,12 @@ The session-scoped cache in `st.session_state["translation_cache"]` evaporates o
 - [ ] In `extract_transactions_from_csv` (around line ~920), check the SQLite cache **before** the session cache, and write back to SQLite after successful AI calls.
 - [ ] Acceptance: re-uploading the same file twice should make zero AI calls on the second upload.
 
-### P1.2 — Per-row JSON recovery in batch translation
-Currently a single truncated row dumps the entire batch to the free Google Translate fallback.
+### P1.2 — Batch Gemini translation + partial recovery
+The current app has a provider-aware batch wrapper, but it translates rows one at a time. A true batch Gemini prompt should reduce latency, and partial JSON recovery should prevent one malformed row from losing the whole batch.
 
-- [ ] In `translate_batch_ai` (around line ~675), wrap `_json.loads(raw)` in a recovery block: when it fails, regex-extract `"\d+"\s*:\s*"[^"]*"` pairs and parse what we can.
-- [ ] Same pattern in `categorise_transactions_ai` (around line ~1597).
+- [ ] Update `translate_batch_ai` to send unique descriptions to Gemini in batches and parse a JSON object.
+- [ ] Add recovery that regex-extracts `"\d+"\s*:\s*"[^"]*"` pairs when the JSON is truncated.
+- [ ] Keep local ensemble categorization as the default; only add LLM categorization if it proves materially better than cached/local learning.
 - [ ] Acceptance: a deliberately malformed JSON response should still recover ≥80% of rows.
 
 ### P1.3 — Persistent categorization cache (use `merchant_learning`)
@@ -79,7 +80,7 @@ Today only `extract_transactions_from_csv` accepts `translation_mode/api_key/ai_
 ## P2 — Observability (after P1)
 
 ### P2.1 — Token / cost meter
-- [ ] Capture `response.usage` (OpenAI) and `response.usage_metadata` (Gemini) inside `_openai_call` / `_gemini_call`. Aggregate into `st.session_state['ai_usage']`.
+- [ ] Capture `response.usage` (OpenAI) and `response.usage_metadata` (Gemini) inside the translation helpers. Aggregate into `st.session_state['ai_usage']`.
 - [ ] Show a small sidebar block:  `AI calls: X · retries: Y · fallbacks: Z · in: 12.4k tok · out: 1.1k tok`.
 - [ ] Estimated cost line based on the price table for the active model.
 
@@ -129,7 +130,8 @@ A single Python script that runs the full AI pipeline against a sample Japanese 
 ### Existing pytest suite
 - [x] `tests/test_import_dedupe.py` — 12 tests
 - [x] `tests/test_recurring.py` — 14 tests
-- [ ] **Coverage gap:** no tests exist for `_ai_generate`, `_resolve_provider`, `_is_retryable_error`. Add unit tests with mocks (no real API calls).
+- [x] Contract tests cover `translate_batch_ai` and `categorise_transactions_ai`.
+- [ ] **Coverage gap:** no tests exist for Gemini API failure modes or token usage accounting. Add unit tests with mocks (no real API calls).
 
 ---
 

@@ -34,6 +34,14 @@ from typing import Optional
 import pandas as pd
 import streamlit as st
 
+GEMINI_PROVIDER = "gemini"
+OPENAI_PROVIDER = "openai"
+DEFAULT_GEMINI_MODEL = "gemini-3.1-flash-lite"
+DEFAULT_OPENAI_MODEL = "gpt-4o-mini"
+GEMINI_TRANSLATION_MODE = "AI-Powered (Gemini 3.1 Flash-Lite)"
+OPENAI_TRANSLATION_MODE = "AI-Powered (OpenAI)"
+LEGACY_OPENAI_TRANSLATION_MODE = "AI-Powered (GPT-3.5)"
+
 # Data layer
 try:
     from data_store import (
@@ -404,9 +412,49 @@ def extract_transactions_from_image(file_stream: io.BytesIO) -> pd.DataFrame:
     return df
 
 
+def _streamlit_secret(section: str, key: str) -> Optional[str]:
+    """Read Streamlit secrets safely when running in or outside Streamlit."""
+    try:
+        value = st.secrets.get(section, {}).get(key)
+        return value or None
+    except Exception:
+        return None
+
+
+def _default_key_for(provider: str, explicit_key: str = None) -> Optional[str]:
+    """Resolve API keys from explicit input, Streamlit secrets, then env vars."""
+    if explicit_key:
+        return explicit_key
+
+    if provider == GEMINI_PROVIDER:
+        return (
+            _streamlit_secret("gemini", "api_key")
+            or os.getenv("GEMINI_API_KEY")
+            or os.getenv("GOOGLE_API_KEY")
+        )
+
+    return (
+        _streamlit_secret("openai", "api_key")
+        or os.getenv("OPENAI_API_KEY")
+    )
+
+
+def _default_model_for(provider: str, explicit_model: str = None) -> str:
+    if explicit_model:
+        return explicit_model
+    return DEFAULT_GEMINI_MODEL if provider == GEMINI_PROVIDER else DEFAULT_OPENAI_MODEL
+
+
+def _provider_from_mode(mode: str, model: str = None, base_url: str = None) -> str:
+    if base_url == GEMINI_PROVIDER or (model and model.startswith("gemini")):
+        return GEMINI_PROVIDER
+    if mode == GEMINI_TRANSLATION_MODE:
+        return GEMINI_PROVIDER
+    return OPENAI_PROVIDER
+
 
 def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
-    """Translate Japanese text to English using OpenAI GPT-3.5-turbo for high accuracy."""
+    """Translate Japanese text to English using OpenAI for high accuracy."""
     try:
         # Normalize half-width to full-width etc. to improve translation quality
         text_norm = normalize_japanese_text(text)
@@ -418,9 +466,7 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
         if not protected_text or not any(ord(char) > 127 for char in protected_text):
             return protected_text
         
-        # If no API key provided, try to get from environment
-        if not api_key:
-            api_key = os.getenv('OPENAI_API_KEY')
+        api_key = _default_key_for(OPENAI_PROVIDER, api_key)
         
         if not api_key:
             st.warning("No OpenAI API key found. Using free translation fallback.")
@@ -437,9 +483,9 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
         
         English translation:"""
         
-        # Get translation from GPT-3.5-turbo
+        # Get translation from the default lightweight OpenAI model
         response = client.chat.completions.create(
-            model="gpt-3.5-turbo",
+            model=DEFAULT_OPENAI_MODEL,
             messages=[
                 {"role": "system", "content": "You are a professional translator specializing in financial documents. Translate Japanese to English accurately, especially for merchant names and financial terms."},
                 {"role": "user", "content": prompt}
@@ -457,6 +503,60 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
         st.warning(f"AI translation failed for '{text}': {e}")
         # Fallback to free translation
         return translate_japanese_to_english_fallback(text)
+
+
+def translate_japanese_to_english_gemini(
+    text: str,
+    api_key: str = None,
+    model: str = None,
+) -> str:
+    """Translate Japanese text to English with Gemini Flash-Lite free-tier model."""
+    try:
+        text_norm = normalize_japanese_text(text)
+        protected_text, placeholders = protect_known_merchants(text_norm)
+
+        if not protected_text or not any(ord(char) > 127 for char in protected_text):
+            return protected_text
+
+        api_key = _default_key_for(GEMINI_PROVIDER, api_key)
+        if not api_key:
+            st.warning("No Gemini API key found. Using free translation fallback.")
+            return translate_japanese_to_english_fallback(text)
+
+        model = _default_model_for(GEMINI_PROVIDER, model)
+
+        from google import genai
+        from google.genai import types
+
+        config_kwargs = {
+            "temperature": 0.1,
+            "max_output_tokens": 120,
+        }
+        try:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            pass
+
+        client = genai.Client(api_key=api_key)
+        response = client.models.generate_content(
+            model=model,
+            contents=(
+                "Translate this Japanese credit-card statement merchant or memo "
+                "to concise English. Preserve merchant names and financial terms. "
+                "Return only the English translation.\n\n"
+                f"Japanese text: {protected_text}"
+            ),
+            config=types.GenerateContentConfig(**config_kwargs),
+        )
+        translated = (getattr(response, "text", "") or "").strip()
+        if not translated:
+            raise RuntimeError("Gemini returned an empty translation")
+
+        return restore_known_merchants(translated, placeholders)
+    except Exception as e:
+        st.warning(f"Gemini translation failed for '{text}': {e}")
+        return translate_japanese_to_english_fallback(text)
+
 
 def translate_japanese_to_english_fallback(text: str) -> str:
     """Fallback translation using deep-translator when AI translation fails."""
@@ -477,12 +577,39 @@ def translate_japanese_to_english_fallback(text: str) -> str:
 
 def translate_japanese_to_english(text: str, mode: str = "Free Fallback", api_key: str = None) -> str:
     """Main translation function - handles different translation modes."""
-    if mode == "AI-Powered (GPT-3.5)":
+    if mode == GEMINI_TRANSLATION_MODE:
+        return translate_japanese_to_english_gemini(text, api_key)
+    if mode in (OPENAI_TRANSLATION_MODE, LEGACY_OPENAI_TRANSLATION_MODE):
         return translate_japanese_to_english_ai(text, api_key)
     elif mode == "Free Fallback":
         return translate_japanese_to_english_fallback(text)
     else:  # No Translation
         return text
+
+
+def translate_batch_ai(
+    texts,
+    api_key: str = None,
+    model: str = None,
+    base_url: str = None,
+) -> dict:
+    """Translate a batch of descriptions through the selected AI provider.
+
+    The function keeps a simple per-call cache so repeated merchants in the same
+    upload do not trigger duplicate provider requests.
+    """
+    provider = _provider_from_mode("", model=model, base_url=base_url)
+    mode = GEMINI_TRANSLATION_MODE if provider == GEMINI_PROVIDER else OPENAI_TRANSLATION_MODE
+    resolved_model = _default_model_for(provider, model)
+    results = {}
+
+    for text in dict.fromkeys(str(t) for t in texts if str(t).strip()):
+        if provider == GEMINI_PROVIDER:
+            results[text] = translate_japanese_to_english_gemini(text, api_key, resolved_model)
+        else:
+            results[text] = translate_japanese_to_english(text, mode, api_key)
+
+    return results
 
 
 def normalize_japanese_text(text: str) -> str:
@@ -1217,6 +1344,64 @@ def categorise_transactions(
     return df
 
 
+def categorise_transactions_ai(
+    df: pd.DataFrame,
+    api_key: str = None,
+    categories=None,
+    subcategories=None,
+    model: str = None,
+    base_url: str = None,
+) -> pd.DataFrame:
+    """Categorize transactions through the local ensemble interface.
+
+    The smoke-test entry point keeps the historical API shape, but categorization
+    is intentionally local so statement category assignment does not burn LLM
+    tokens after translation.
+    """
+    df_result = df.copy()
+    category_values = []
+    subcategory_values = []
+    confidences = []
+    explanations = []
+
+    allowed_categories = set(categories or [])
+    subcategories = subcategories or {}
+    engine = EnsembleCategorizationEngine() if EnsembleCategorizationEngine else None
+
+    for _, row in df_result.iterrows():
+        transaction = {
+            "description": row.get("description", ""),
+            "original_description": row.get("original_description", ""),
+            "amount": row.get("amount", 0),
+            "date": row.get("date"),
+            "transaction_type": row.get("transaction_type", "Expense"),
+        }
+
+        if engine:
+            category, subcategory, confidence, explanation = engine.predict(transaction)
+        else:
+            category, subcategory, confidence, explanation = "Uncategorised", "", 0.0, {}
+
+        if allowed_categories and category not in allowed_categories:
+            category, subcategory, confidence = "Uncategorised", "", 0.0
+
+        if category in subcategories and subcategory not in subcategories.get(category, {}):
+            subcategory = ""
+        elif subcategory is None:
+            subcategory = ""
+
+        category_values.append(category)
+        subcategory_values.append(subcategory)
+        confidences.append(float(confidence or 0.0))
+        explanations.append(explanation)
+
+    df_result["category"] = category_values
+    df_result["subcategory"] = subcategory_values
+    df_result["confidence"] = confidences
+    df_result["prediction_breakdown"] = explanations
+    return df_result
+
+
 def apply_smart_categorization(df: pd.DataFrame, learning_system, 
                               rules, subcategories) -> pd.DataFrame:
     """Apply smart categorization using the learning system."""
@@ -1471,50 +1656,65 @@ def main() -> None:
     
     # AI Translation Setup
     st.sidebar.header("🤖 AI Translation Settings")
-    st.sidebar.write("For best Japanese translation accuracy, use OpenAI GPT-3.5")
-    
-    # Check for existing API key
-    existing_api_key = os.getenv('OPENAI_API_KEY')
-    
-    if existing_api_key:
-        st.sidebar.success("✅ OpenAI API key found in environment")
-        api_key = existing_api_key
-    else:
-        # API Key input
-        api_key = st.sidebar.text_input(
-            "OpenAI API Key", 
-            type="password",
-            help="Get your API key from https://platform.openai.com/api-keys (same account as ChatGPT Premium)"
-        )
-        
+    st.sidebar.write("Gemini 3.1 Flash-Lite is the default AI translation model.")
+
+    gemini_key = _default_key_for(GEMINI_PROVIDER)
+    openai_key = _default_key_for(OPENAI_PROVIDER)
+
+    translation_options = [
+        "Free Fallback",
+        GEMINI_TRANSLATION_MODE,
+        OPENAI_TRANSLATION_MODE,
+        "No Translation",
+    ]
+    default_translation_index = 1 if gemini_key else 0
+    translation_mode = st.sidebar.selectbox(
+        "Translation Mode",
+        translation_options,
+        index=default_translation_index,
+        help="Gemini uses the current free-tier Flash-Lite model; Free Fallback uses Google Translate.",
+    )
+
+    api_key = None
+    if translation_mode == GEMINI_TRANSLATION_MODE:
+        api_key = gemini_key
         if api_key:
-            st.sidebar.success("✅ API key configured for this session")
-            # Set environment variable for this session
-            os.environ['OPENAI_API_KEY'] = api_key
-    
-    # Quick setup guide for ChatGPT Premium users
-    if not api_key:
-        with st.sidebar.expander("🚀 Quick Setup for ChatGPT Premium Users"):
+            st.sidebar.success("✅ Gemini API key found")
+        else:
+            api_key = st.sidebar.text_input(
+                "Gemini API Key",
+                type="password",
+                help="Create a free-tier key in Google AI Studio.",
+            )
+            if api_key:
+                os.environ["GEMINI_API_KEY"] = api_key
+                st.sidebar.success("✅ Gemini API key configured for this session")
+            else:
+                st.sidebar.info("Add a Gemini key or switch to Free Fallback.")
+    elif translation_mode == OPENAI_TRANSLATION_MODE:
+        api_key = openai_key
+        if api_key:
+            st.sidebar.success("✅ OpenAI API key found")
+        else:
+            api_key = st.sidebar.text_input(
+                "OpenAI API Key",
+                type="password",
+                help="Get your key from https://platform.openai.com/api-keys",
+            )
+            if api_key:
+                os.environ["OPENAI_API_KEY"] = api_key
+                st.sidebar.success("✅ OpenAI API key configured for this session")
+            else:
+                st.sidebar.info("Add an OpenAI key or switch to Free Fallback.")
+
+    if translation_mode == GEMINI_TRANSLATION_MODE and not api_key:
+        with st.sidebar.expander("🚀 Gemini free-tier setup"):
             st.write("""
-            1. **Go to:** https://platform.openai.com/api-keys
-            2. **Sign in** with your ChatGPT Premium account
-            3. **Click "Create new secret key"**
-            4. **Copy the key** (starts with `sk-...`)
-            5. **Paste it above** for AI-powered Japanese translation
+            1. Go to https://aistudio.google.com/app/apikey
+            2. Create an API key
+            3. Add it to Streamlit secrets as `[gemini].api_key`
+            4. Or paste it above for this session
             """)
-            st.success("💡 Your ChatGPT Premium account gives you access to the API!")
-    
-    # Translation mode selection
-    if api_key:
-        translation_mode = st.sidebar.selectbox(
-            "Translation Mode",
-            ["Free Fallback", "AI-Powered (GPT-3.5)", "No Translation"],
-            index=0,  # Default to Free Fallback
-            help="Free Fallback uses Google Translate, AI-Powered uses OpenAI for better accuracy"
-        )
-    else:
-        translation_mode = "Free Fallback"
-        st.sidebar.success("ℹ️ Using free translation (enter API key for AI accuracy)")
     
     # Smart Learning Dashboard (collapsed in sidebar — easier on mobile)
     if learning_system:
