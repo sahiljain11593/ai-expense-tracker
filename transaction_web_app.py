@@ -338,7 +338,40 @@ class MerchantLearningSystem:
         }
 
 
-def extract_transactions_from_pdf(file_stream: io.BytesIO) -> pd.DataFrame:
+def _apply_batch_translation(df: pd.DataFrame, translation_mode: str, api_key: str) -> pd.DataFrame:
+    """Translate the description column in-place using the batch AI path.
+
+    Stores the original Japanese in original_description and overwrites
+    description with the translated text.  No-ops when mode is free/none.
+    """
+    needs_ai = translation_mode in (
+        GEMINI_TRANSLATION_MODE,
+        OPENAI_TRANSLATION_MODE,
+        LEGACY_OPENAI_TRANSLATION_MODE,
+        "AI-Powered (GPT-3.5)",
+    )
+    if not needs_ai or "description" not in df.columns:
+        return df
+
+    df = df.copy()
+    raw_descs = df["description"].astype(str).tolist()
+    translation_map = translate_batch_ai(
+        raw_descs,
+        api_key=api_key,
+        base_url=GEMINI_PROVIDER if translation_mode == GEMINI_TRANSLATION_MODE else None,
+    )
+    df["original_description"] = df["description"]
+    df["description"] = df["description"].apply(
+        lambda t: translation_map.get(str(t), translate_japanese_to_english(str(t), translation_mode, api_key))
+    )
+    return df
+
+
+def extract_transactions_from_pdf(
+    file_stream: io.BytesIO,
+    translation_mode: str = "Free Fallback",
+    api_key: str = None,
+) -> pd.DataFrame:
     """Extract transactions from a PDF statement using pdfplumber.
 
     Assumes the PDF contains a table with columns Date, Description and
@@ -374,17 +407,21 @@ def extract_transactions_from_pdf(file_stream: io.BytesIO) -> pd.DataFrame:
                             amount = float(row[amt_idx].replace(",", ""))
                         except Exception:
                             continue
-                        transactions.append({"date": date, "description": 
-description, "amount": amount})
+                        transactions.append({"date": date, "description": description, "amount": amount})
             if transactions:
                 break
     if not transactions:
         raise RuntimeError("No transaction table detected in the uploaded PDF.")
     df = pd.DataFrame(transactions)
+    df = _apply_batch_translation(df, translation_mode, api_key)
     return df
 
 
-def extract_transactions_from_image(file_stream: io.BytesIO) -> pd.DataFrame:
+def extract_transactions_from_image(
+    file_stream: io.BytesIO,
+    translation_mode: str = "Free Fallback",
+    api_key: str = None,
+) -> pd.DataFrame:
     """Extract transactions from an image using OCR.
 
     This function reads the entire image as text and then attempts to
@@ -399,7 +436,7 @@ def extract_transactions_from_image(file_stream: io.BytesIO) -> pd.DataFrame:
     image = Image.open(file_stream)
     text = pytesseract.image_to_string(image)
     lines = text.splitlines()
-    pattern = re.compile(r"(\\d{2}/\\d{2}/\\d{4})\\s+(.+?)\\s+(-?\\d+[.,]?\\d*)")
+    pattern = re.compile(r"(\d{2}/\d{2}/\d{4})\s+(.+?)\s+(-?\d+[.,]?\d*)")
     records = []
     for line in lines:
         match = pattern.search(line)
@@ -410,13 +447,13 @@ def extract_transactions_from_image(file_stream: io.BytesIO) -> pd.DataFrame:
             except Exception:
                 continue
             amount = float(amt_str.replace(",", ""))
-            records.append({"date": date, "description": desc.strip(), 
-"amount": amount})
+            records.append({"date": date, "description": desc.strip(), "amount": amount})
     if not records:
         raise RuntimeError(
             "No transactions detected in the image.  Ensure the statement is clearly legible and try again."
         )
     df = pd.DataFrame(records)
+    df = _apply_batch_translation(df, translation_mode, api_key)
     return df
 
 
@@ -2367,7 +2404,7 @@ def main() -> None:
         if not st.session_state.get('resume_mode', False):
             try:
                 if uploaded_file.type == "application/pdf":
-                    df = extract_transactions_from_pdf(uploaded_file)
+                    df = extract_transactions_from_pdf(uploaded_file, translation_mode, api_key)
                 elif uploaded_file.type == "text/csv":
                     df = extract_transactions_from_csv(uploaded_file, translation_mode, api_key)
                     # Set flag and file info for duplicate analysis section
@@ -2382,7 +2419,7 @@ def main() -> None:
                         # Fallback: store as empty list
                         st.session_state['csv_dataframe'] = []
                 else:
-                    df = extract_transactions_from_image(uploaded_file)
+                    df = extract_transactions_from_image(uploaded_file, translation_mode, api_key)
             except Exception as e:
                 st.error(f"Error processing file: {e}")
                 return
