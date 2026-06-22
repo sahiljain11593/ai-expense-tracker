@@ -46,9 +46,9 @@ def test_upsert_overwrites_old_entry(tmp_path):
 
 def test_translate_batch_ai_skips_provider_for_cached(monkeypatch, tmp_path):
     """Provider must NOT be called for texts already in the DB cache."""
+    import services.translation as svc
     db = str(tmp_path / "test.db")
     init_db(db)
-    # Pre-populate the cache
     save_translations({"ローソン": "Lawson (cached)"}, db_path=db)
 
     provider_calls = []
@@ -57,18 +57,13 @@ def test_translate_batch_ai_skips_provider_for_cached(monkeypatch, tmp_path):
         provider_calls.append(text)
         return f"FRESH:{text}"
 
-    monkeypatch.setattr(app, "translate_japanese_to_english_gemini", fake_gemini)
-    # Point translate_batch_ai at our tmp DB
-    monkeypatch.setattr(app, "get_cached_translations", lambda texts, **kw: get_cached_translations(texts, db_path=db))
-    monkeypatch.setattr(app, "save_translations", lambda m, **kw: save_translations(m, db_path=db))
+    monkeypatch.setattr(svc, "translate_japanese_to_english_gemini", fake_gemini)
+    monkeypatch.setattr(svc, "_translate_batch_gemini_single_prompt", lambda texts, api_key, model: {})
+    monkeypatch.setattr(svc, "get_cached_translations", lambda texts, **kw: get_cached_translations(texts, db_path=db))
+    monkeypatch.setattr(svc, "save_translations", lambda m, **kw: save_translations(m, db_path=db))
 
-    result = app.translate_batch_ai(
-        ["ローソン", "スタバ"],
-        api_key="k",
-        base_url=app.GEMINI_PROVIDER,
-    )
+    result = app.translate_batch_ai(["ローソン", "スタバ"], api_key="k", base_url=app.GEMINI_PROVIDER)
 
-    # ローソン was cached → no provider call for it
     assert provider_calls == ["スタバ"]
     assert result["ローソン"] == "Lawson (cached)"
     assert result["スタバ"] == "FRESH:スタバ"
@@ -76,20 +71,18 @@ def test_translate_batch_ai_skips_provider_for_cached(monkeypatch, tmp_path):
 
 def test_translate_batch_ai_writes_new_translations_to_cache(monkeypatch, tmp_path):
     """Fresh translations must be written back to the DB cache."""
+    import services.translation as svc
     db = str(tmp_path / "test.db")
     init_db(db)
-
     saved = {}
 
     def fake_gemini(text, api_key=None, model=None):
         return f"EN:{text}"
 
-    def fake_save(mapping, model=None, provider=None, **kw):
-        saved.update(mapping)
-
-    monkeypatch.setattr(app, "translate_japanese_to_english_gemini", fake_gemini)
-    monkeypatch.setattr(app, "get_cached_translations", lambda texts, **kw: {})
-    monkeypatch.setattr(app, "save_translations", fake_save)
+    monkeypatch.setattr(svc, "translate_japanese_to_english_gemini", fake_gemini)
+    monkeypatch.setattr(svc, "_translate_batch_gemini_single_prompt", lambda texts, api_key, model: {})
+    monkeypatch.setattr(svc, "get_cached_translations", lambda texts, **kw: {})
+    monkeypatch.setattr(svc, "save_translations", lambda mapping, **kw: saved.update(mapping))
 
     app.translate_batch_ai(["ローソン"], api_key="k", base_url=app.GEMINI_PROVIDER)
 

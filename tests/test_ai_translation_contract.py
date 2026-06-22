@@ -8,16 +8,21 @@ import transaction_web_app as app
 
 
 def test_translate_batch_ai_routes_to_gemini(monkeypatch):
+    import services.translation as svc
     calls = []
 
     def fake_gemini(text, api_key=None, model=None):
         calls.append((text, api_key, model))
         return f"translated:{text}"
 
-    monkeypatch.setattr(app, "translate_japanese_to_english_gemini", fake_gemini)
+    # Patch where the function is actually called (inside services.translation)
+    monkeypatch.setattr(svc, "translate_japanese_to_english_gemini", fake_gemini)
+    monkeypatch.setattr(svc, "_translate_batch_gemini_single_prompt", lambda texts, api_key, model: {})
+    monkeypatch.setattr(svc, "get_cached_translations", lambda texts, **kw: {}, raising=False)
+    monkeypatch.setattr(svc, "save_translations", lambda *a, **kw: None, raising=False)
 
     result = app.translate_batch_ai(
-        ["ローソン", "ローソン", "スターバックス"],
+        ["ローソン", "スターバックス"],
         api_key="test-key",
         base_url=app.GEMINI_PROVIDER,
     )
@@ -34,13 +39,17 @@ def test_translate_batch_ai_routes_to_gemini(monkeypatch):
 
 def test_translate_batch_ai_deduplicates_inputs(monkeypatch):
     """Repeated merchants should produce only one provider call each."""
+    import services.translation as svc
     calls = []
 
     def fake_gemini(text, api_key=None, model=None):
         calls.append(text)
         return f"EN:{text}"
 
-    monkeypatch.setattr(app, "translate_japanese_to_english_gemini", fake_gemini)
+    monkeypatch.setattr(svc, "translate_japanese_to_english_gemini", fake_gemini)
+    monkeypatch.setattr(svc, "_translate_batch_gemini_single_prompt", lambda texts, api_key, model: {})
+    monkeypatch.setattr(svc, "get_cached_translations", lambda texts, **kw: {}, raising=False)
+    monkeypatch.setattr(svc, "save_translations", lambda *a, **kw: None, raising=False)
 
     result = app.translate_batch_ai(
         ["ローソン", "ローソン", "ローソン", "スタバ"],

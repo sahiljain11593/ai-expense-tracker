@@ -58,6 +58,7 @@ def test_markdown_fenced_json_is_handled():
 
 def test_translate_batch_ai_uses_single_prompt_for_multiple_gemini_texts(monkeypatch):
     """For Gemini + multiple uncached texts, one batch call must be used."""
+    import services.translation as svc
     single_prompt_calls = []
 
     def fake_batch(texts, api_key, model):
@@ -70,10 +71,10 @@ def test_translate_batch_ai_uses_single_prompt_for_multiple_gemini_texts(monkeyp
         per_item_calls.append(text)
         return f"SINGLE:{text}"
 
-    monkeypatch.setattr(app, "_translate_batch_gemini_single_prompt", fake_batch)
-    monkeypatch.setattr(app, "translate_japanese_to_english_gemini", fake_single)
-    monkeypatch.setattr(app, "get_cached_translations", lambda texts, **kw: {})
-    monkeypatch.setattr(app, "save_translations", lambda *a, **kw: None)
+    monkeypatch.setattr(svc, "_translate_batch_gemini_single_prompt", fake_batch)
+    monkeypatch.setattr(svc, "translate_japanese_to_english_gemini", fake_single)
+    monkeypatch.setattr(svc, "get_cached_translations", lambda texts, **kw: {})
+    monkeypatch.setattr(svc, "save_translations", lambda *a, **kw: None)
 
     result = app.translate_batch_ai(
         ["ローソン", "スタバ", "ドンキ"],
@@ -81,19 +82,17 @@ def test_translate_batch_ai_uses_single_prompt_for_multiple_gemini_texts(monkeyp
         base_url=app.GEMINI_PROVIDER,
     )
 
-    # Batch prompt called once with all 3 texts
     assert len(single_prompt_calls) == 1
     assert set(single_prompt_calls[0]) == {"ローソン", "スタバ", "ドンキ"}
-    # Per-item helper not called (batch handled everything)
     assert per_item_calls == []
     assert result == {"ローソン": "BATCH:ローソン", "スタバ": "BATCH:スタバ", "ドンキ": "BATCH:ドンキ"}
 
 
 def test_translate_batch_ai_falls_back_per_item_when_batch_misses(monkeypatch):
     """If batch misses a text, per-item fallback must cover it."""
+    import services.translation as svc
 
     def fake_batch(texts, api_key, model):
-        # Only return result for the first text
         return {texts[0]: f"BATCH:{texts[0]}"}
 
     per_item_calls = []
@@ -102,16 +101,12 @@ def test_translate_batch_ai_falls_back_per_item_when_batch_misses(monkeypatch):
         per_item_calls.append(text)
         return f"SINGLE:{text}"
 
-    monkeypatch.setattr(app, "_translate_batch_gemini_single_prompt", fake_batch)
-    monkeypatch.setattr(app, "translate_japanese_to_english_gemini", fake_single)
-    monkeypatch.setattr(app, "get_cached_translations", lambda texts, **kw: {})
-    monkeypatch.setattr(app, "save_translations", lambda *a, **kw: None)
+    monkeypatch.setattr(svc, "_translate_batch_gemini_single_prompt", fake_batch)
+    monkeypatch.setattr(svc, "translate_japanese_to_english_gemini", fake_single)
+    monkeypatch.setattr(svc, "get_cached_translations", lambda texts, **kw: {})
+    monkeypatch.setattr(svc, "save_translations", lambda *a, **kw: None)
 
-    result = app.translate_batch_ai(
-        ["ローソン", "スタバ"],
-        api_key="k",
-        base_url=app.GEMINI_PROVIDER,
-    )
+    result = app.translate_batch_ai(["ローソン", "スタバ"], api_key="k", base_url=app.GEMINI_PROVIDER)
 
     assert result["ローソン"].startswith("BATCH:")
     assert result["スタバ"].startswith("SINGLE:")
