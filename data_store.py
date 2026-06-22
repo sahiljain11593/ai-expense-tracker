@@ -222,6 +222,19 @@ def _create_missing_tables(cur: sqlite3.Cursor) -> None:
         """
     )
 
+    # translation cache — avoids re-calling the AI provider for already-seen text
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS translation_cache (
+          jp_text    TEXT PRIMARY KEY,
+          en_text    TEXT NOT NULL,
+          model      TEXT,
+          provider   TEXT,
+          created_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
     # discarded duplicates
     cur.execute(
         """
@@ -393,6 +406,19 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
               confidence_score REAL DEFAULT 0.5,
               last_updated TEXT NOT NULL,
               UNIQUE(merchant, context_key, context_value, category, subcategory)
+            )
+            """
+        )
+
+        # translation cache
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS translation_cache (
+              jp_text    TEXT PRIMARY KEY,
+              en_text    TEXT NOT NULL,
+              model      TEXT,
+              provider   TEXT,
+              created_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
@@ -1780,5 +1806,87 @@ def get_existing_dedupe_hashes(hashes: List[str], db_path: str = DEFAULT_DB_PATH
         placeholders = ",".join(["?"] * len(hashes))
         cur.execute(f"SELECT dedupe_hash FROM transactions WHERE dedupe_hash IN ({placeholders})", hashes)
         return {row[0] for row in cur.fetchall()}
+    finally:
+        conn.close()
+
+
+# ── Translation cache ──────────────────────────────────────────────────────
+
+
+def get_cached_translations(
+    jp_texts: List[str],
+    db_path: str = DEFAULT_DB_PATH,
+) -> Dict[str, str]:
+    """Return {jp_text: en_text} for every text already stored in the cache."""
+    if not jp_texts:
+        return {}
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        placeholders = ",".join(["?"] * len(jp_texts))
+        cur.execute(
+            f"SELECT jp_text, en_text FROM translation_cache WHERE jp_text IN ({placeholders})",
+            jp_texts,
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+
+def save_translations(
+    mapping: Dict[str, str],
+    model: str = None,
+    provider: str = None,
+    db_path: str = DEFAULT_DB_PATH,
+) -> None:
+    """Upsert translated pairs into the persistent cache."""
+    if not mapping:
+        return
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        for jp_text, en_text in mapping.items():
+            cur.execute(
+                """
+                INSERT INTO translation_cache (jp_text, en_text, model, provider)
+                VALUES (?, ?, ?, ?)
+                ON CONFLICT(jp_text) DO UPDATE SET
+                  en_text    = excluded.en_text,
+                  model      = excluded.model,
+                  provider   = excluded.provider,
+                  created_at = CURRENT_TIMESTAMP
+                """,
+                (jp_text, en_text, model, provider),
+            )
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+
+
+def get_translation_cache_size(db_path: str = DEFAULT_DB_PATH) -> int:
+    """Return number of entries in the translation cache."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM translation_cache")
+        return cur.fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        conn.close()
+
+
+def clear_translation_cache(db_path: str = DEFAULT_DB_PATH) -> None:
+    """Delete all entries from the translation cache."""
+    conn = get_connection(db_path)
+    try:
+        conn.execute("DELETE FROM translation_cache")
+        conn.commit()
+    except Exception:
+        pass
     finally:
         conn.close()

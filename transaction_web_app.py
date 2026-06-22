@@ -72,6 +72,10 @@ try:
         get_learning_suggestions,
         get_learning_statistics,
         load_merchant_learning,
+        get_cached_translations,
+        save_translations,
+        get_translation_cache_size,
+        clear_translation_cache,
     )
 except Exception as _e:
     # Allow the app to still render other parts; show a soft warning
@@ -97,6 +101,10 @@ except Exception as _e:
     get_learning_suggestions = None  # type: ignore
     get_learning_statistics = None  # type: ignore
     load_merchant_learning = None  # type: ignore
+    get_cached_translations = None  # type: ignore
+    save_translations = None  # type: ignore
+    get_translation_cache_size = None  # type: ignore
+    clear_translation_cache = None  # type: ignore
 
 # Auth UI (Firebase Google Sign-In)
 try:
@@ -595,21 +603,44 @@ def translate_batch_ai(
 ) -> dict:
     """Translate a batch of descriptions through the selected AI provider.
 
-    The function keeps a simple per-call cache so repeated merchants in the same
-    upload do not trigger duplicate provider requests.
+    1. Deduplicates the input list so each unique text is sent once.
+    2. Checks the persistent SQLite translation_cache first — cached texts cost zero API calls.
+    3. Sends only uncached texts to the provider.
+    4. Writes new translations back to the cache for future uploads.
     """
     provider = _provider_from_mode("", model=model, base_url=base_url)
     mode = GEMINI_TRANSLATION_MODE if provider == GEMINI_PROVIDER else OPENAI_TRANSLATION_MODE
     resolved_model = _default_model_for(provider, model)
-    results = {}
 
-    for text in dict.fromkeys(str(t) for t in texts if str(t).strip()):
+    # Unique, non-empty texts in input order
+    unique_texts = list(dict.fromkeys(str(t) for t in texts if str(t).strip()))
+
+    # 1. Check persistent DB cache
+    db_cached: dict = {}
+    if get_cached_translations is not None:
+        try:
+            db_cached = get_cached_translations(unique_texts)
+        except Exception:
+            pass
+
+    # 2. Only call provider for texts not in the DB cache
+    uncached = [t for t in unique_texts if t not in db_cached]
+    new_translations: dict = {}
+    for text in uncached:
         if provider == GEMINI_PROVIDER:
-            results[text] = translate_japanese_to_english_gemini(text, api_key, resolved_model)
+            new_translations[text] = translate_japanese_to_english_gemini(text, api_key, resolved_model)
         else:
-            results[text] = translate_japanese_to_english(text, mode, api_key)
+            new_translations[text] = translate_japanese_to_english(text, mode, api_key)
 
-    return results
+    # 3. Persist new translations
+    if new_translations and save_translations is not None:
+        try:
+            save_translations(new_translations, model=resolved_model, provider=provider)
+        except Exception:
+            pass
+
+    # 4. Merge and return (DB hits + fresh translations)
+    return {**db_cached, **new_translations}
 
 
 def normalize_japanese_text(text: str) -> str:
