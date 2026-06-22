@@ -152,14 +152,23 @@ def _replace_hyphen_between_katakana(s: str) -> str:
 
 
 def protect_known_merchants(text: str):
-    merchant_map = {
-        "ドンキホーテ": "Don Quijote", "ドン・キホーテ": "Don Quijote",
-        "ローソン": "Lawson", "セブンイレブン": "7-Eleven",
-        "ファミリーマート": "FamilyMart", "イオン": "AEON",
-        "ニトリ": "Nitori", "マクドナルド": "McDonald's",
-        "ケンタッキー": "KFC", "スターバックス": "Starbucks",
-        "イトーヨーカドー": "Ito-Yokado", "西友": "Seiyu", "ライフ": "LIFE",
-    }
+    """Replace known JP merchant names with placeholders to prevent mistranslation.
+
+    Uses the full MERCHANT_LIBRARY from services.merchants so there is a single
+    source of truth.  Falls back to a small inline dict if the import fails.
+    """
+    try:
+        from services.merchants import MERCHANT_LIBRARY as _lib  # type: ignore
+        merchant_map = _lib
+    except Exception:
+        merchant_map = {
+            "ドンキホーテ": "Don Quijote", "ドン・キホーテ": "Don Quijote",
+            "ローソン": "Lawson", "セブンイレブン": "7-Eleven",
+            "ファミリーマート": "FamilyMart", "イオン": "AEON",
+            "ニトリ": "Nitori", "マクドナルド": "McDonald's",
+            "ケンタッキー": "KFC", "スターバックス": "Starbucks",
+            "イトーヨーカドー": "Ito-Yokado", "西友": "Seiyu", "ライフ": "LIFE",
+        }
     placeholders: dict = {}
     processed = text
     for i, (jp, en) in enumerate(merchant_map.items()):
@@ -370,7 +379,14 @@ def translate_batch_ai(
     model: str = None,
     base_url: str = None,
 ) -> dict:
-    """Deduplicate → check SQLite cache → call provider (single-prompt for Gemini) → write cache."""
+    """Translate a batch of descriptions.  Resolution order (cheapest first):
+
+    Step 0 │ Static MERCHANT_LIBRARY  (in-memory, ~0 μs, zero cost)
+    Step 1 │ SQLite translation_cache (DB lookup, ~1 ms, zero cost)
+    Step 2 │ AI provider call         (~1–5 s, may cost tokens)
+    """
+    from services.merchants import apply_merchant_library  # type: ignore
+
     import services.translation as _self
     _get_cached = _self.get_cached_translations
     _save = _self.save_translations
@@ -381,14 +397,18 @@ def translate_batch_ai(
 
     unique_texts = list(dict.fromkeys(str(t) for t in texts if str(t).strip()))
 
+    # ── Step 0: static merchant library ──────────────────────────────────────
+    library_hits, after_library = apply_merchant_library(unique_texts)
+
+    # ── Step 1: SQLite translation_cache ─────────────────────────────────────
     db_cached: dict = {}
-    if _get_cached is not None:
+    if _get_cached is not None and after_library:
         try:
-            db_cached = _get_cached(unique_texts)
+            db_cached = _get_cached(after_library)
         except Exception:
             pass
 
-    uncached = [t for t in unique_texts if t not in db_cached]
+    uncached = [t for t in after_library if t not in db_cached]
     new_translations: dict = {}
 
     # Use module-level refs so tests can monkeypatch them
@@ -415,4 +435,5 @@ def translate_batch_ai(
         except Exception:
             pass
 
-    return {**db_cached, **new_translations}
+    # ── Merge: library hits + DB cache + fresh AI translations ───────────────
+    return {**library_hits, **db_cached, **new_translations}

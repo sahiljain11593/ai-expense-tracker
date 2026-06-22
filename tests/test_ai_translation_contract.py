@@ -7,7 +7,12 @@ import pytest
 import transaction_web_app as app
 
 
+_UNKNOWN_A = "謎の食堂アルファ"
+_UNKNOWN_B = "不思議な店ベータ"
+
+
 def test_translate_batch_ai_routes_to_gemini(monkeypatch):
+    """Texts not in the merchant library must reach the Gemini provider."""
     import services.translation as svc
     calls = []
 
@@ -15,30 +20,29 @@ def test_translate_batch_ai_routes_to_gemini(monkeypatch):
         calls.append((text, api_key, model))
         return f"translated:{text}"
 
-    # Patch where the function is actually called (inside services.translation)
     monkeypatch.setattr(svc, "translate_japanese_to_english_gemini", fake_gemini)
     monkeypatch.setattr(svc, "_translate_batch_gemini_single_prompt", lambda texts, api_key, model: {})
     monkeypatch.setattr(svc, "get_cached_translations", lambda texts, **kw: {}, raising=False)
     monkeypatch.setattr(svc, "save_translations", lambda *a, **kw: None, raising=False)
 
     result = app.translate_batch_ai(
-        ["ローソン", "スターバックス"],
+        [_UNKNOWN_A, _UNKNOWN_B],
         api_key="test-key",
         base_url=app.GEMINI_PROVIDER,
     )
 
     assert result == {
-        "ローソン": "translated:ローソン",
-        "スターバックス": "translated:スターバックス",
+        _UNKNOWN_A: f"translated:{_UNKNOWN_A}",
+        _UNKNOWN_B: f"translated:{_UNKNOWN_B}",
     }
     assert calls == [
-        ("ローソン", "test-key", app.DEFAULT_GEMINI_MODEL),
-        ("スターバックス", "test-key", app.DEFAULT_GEMINI_MODEL),
+        (_UNKNOWN_A, "test-key", app.DEFAULT_GEMINI_MODEL),
+        (_UNKNOWN_B, "test-key", app.DEFAULT_GEMINI_MODEL),
     ]
 
 
 def test_translate_batch_ai_deduplicates_inputs(monkeypatch):
-    """Repeated merchants should produce only one provider call each."""
+    """Repeated unknown texts should produce only one provider call each."""
     import services.translation as svc
     calls = []
 
@@ -52,15 +56,14 @@ def test_translate_batch_ai_deduplicates_inputs(monkeypatch):
     monkeypatch.setattr(svc, "save_translations", lambda *a, **kw: None, raising=False)
 
     result = app.translate_batch_ai(
-        ["ローソン", "ローソン", "ローソン", "スタバ"],
+        [_UNKNOWN_A, _UNKNOWN_A, _UNKNOWN_A, _UNKNOWN_B],
         api_key="k",
         base_url=app.GEMINI_PROVIDER,
     )
 
-    # Only 2 unique texts → 2 provider calls
-    assert calls == ["ローソン", "スタバ"]
-    assert result["ローソン"] == "EN:ローソン"
-    assert result["スタバ"] == "EN:スタバ"
+    assert calls == [_UNKNOWN_A, _UNKNOWN_B]
+    assert result[_UNKNOWN_A] == f"EN:{_UNKNOWN_A}"
+    assert result[_UNKNOWN_B] == f"EN:{_UNKNOWN_B}"
 
 
 def test_extract_csv_uses_batch_translation(monkeypatch, tmp_path):

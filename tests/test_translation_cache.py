@@ -44,12 +44,16 @@ def test_upsert_overwrites_old_entry(tmp_path):
     assert result["ローソン"] == "Lawson NEW"
 
 
+_CACHE_UNKNOWN_A = "謎のキャッシュ店舗A"
+_CACHE_UNKNOWN_B = "謎のキャッシュ店舗B"
+
+
 def test_translate_batch_ai_skips_provider_for_cached(monkeypatch, tmp_path):
     """Provider must NOT be called for texts already in the DB cache."""
     import services.translation as svc
     db = str(tmp_path / "test.db")
     init_db(db)
-    save_translations({"ローソン": "Lawson (cached)"}, db_path=db)
+    save_translations({_CACHE_UNKNOWN_A: "Cached Translation A"}, db_path=db)
 
     provider_calls = []
 
@@ -62,11 +66,11 @@ def test_translate_batch_ai_skips_provider_for_cached(monkeypatch, tmp_path):
     monkeypatch.setattr(svc, "get_cached_translations", lambda texts, **kw: get_cached_translations(texts, db_path=db))
     monkeypatch.setattr(svc, "save_translations", lambda m, **kw: save_translations(m, db_path=db))
 
-    result = app.translate_batch_ai(["ローソン", "スタバ"], api_key="k", base_url=app.GEMINI_PROVIDER)
+    result = app.translate_batch_ai([_CACHE_UNKNOWN_A, _CACHE_UNKNOWN_B], api_key="k", base_url=app.GEMINI_PROVIDER)
 
-    assert provider_calls == ["スタバ"]
-    assert result["ローソン"] == "Lawson (cached)"
-    assert result["スタバ"] == "FRESH:スタバ"
+    assert provider_calls == [_CACHE_UNKNOWN_B]
+    assert result[_CACHE_UNKNOWN_A] == "Cached Translation A"
+    assert result[_CACHE_UNKNOWN_B] == f"FRESH:{_CACHE_UNKNOWN_B}"
 
 
 def test_translate_batch_ai_writes_new_translations_to_cache(monkeypatch, tmp_path):
@@ -84,6 +88,6 @@ def test_translate_batch_ai_writes_new_translations_to_cache(monkeypatch, tmp_pa
     monkeypatch.setattr(svc, "get_cached_translations", lambda texts, **kw: {})
     monkeypatch.setattr(svc, "save_translations", lambda mapping, **kw: saved.update(mapping))
 
-    app.translate_batch_ai(["ローソン"], api_key="k", base_url=app.GEMINI_PROVIDER)
+    app.translate_batch_ai([_CACHE_UNKNOWN_A], api_key="k", base_url=app.GEMINI_PROVIDER)
 
-    assert saved == {"ローソン": "EN:ローソン"}
+    assert saved == {_CACHE_UNKNOWN_A: f"EN:{_CACHE_UNKNOWN_A}"}

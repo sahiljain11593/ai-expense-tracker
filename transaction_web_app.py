@@ -95,6 +95,7 @@ try:
         save_translations,
         get_translation_cache_size,
         clear_translation_cache,
+        seed_translation_cache_from_library,
     )
 except Exception as _e:
     # Allow the app to still render other parts; show a soft warning
@@ -124,6 +125,7 @@ except Exception as _e:
     save_translations = None  # type: ignore
     get_translation_cache_size = None  # type: ignore
     clear_translation_cache = None  # type: ignore
+    seed_translation_cache_from_library = None  # type: ignore
 
 # Auth UI (Firebase Google Sign-In)
 try:
@@ -1306,7 +1308,15 @@ def load_custom_rules(filename: str = "custom_rules.json"):
 def main() -> None:
     # Initialize database (ensure all tables exist)
     init_db()
-    
+
+    # Seed the translation cache with the static merchant library on first run
+    # (idempotent — only inserts rows that are not already present)
+    if seed_translation_cache_from_library is not None:
+        try:
+            seed_translation_cache_from_library()
+        except Exception:
+            pass
+
     # Require authentication (single-user gate if configured)
     if not require_auth():
         return

@@ -56,8 +56,13 @@ def test_markdown_fenced_json_is_handled():
     assert result["スタバ"] == "Starbucks"
 
 
+_BATCH_TEXT_A = "謎のバッチ店舗アルファ"
+_BATCH_TEXT_B = "謎のバッチ店舗ベータ"
+_BATCH_TEXT_C = "謎のバッチ店舗ガンマ"
+
+
 def test_translate_batch_ai_uses_single_prompt_for_multiple_gemini_texts(monkeypatch):
-    """For Gemini + multiple uncached texts, one batch call must be used."""
+    """For Gemini + multiple uncached/unlibrary texts, one batch call must be used."""
     import services.translation as svc
     single_prompt_calls = []
 
@@ -77,15 +82,19 @@ def test_translate_batch_ai_uses_single_prompt_for_multiple_gemini_texts(monkeyp
     monkeypatch.setattr(svc, "save_translations", lambda *a, **kw: None)
 
     result = app.translate_batch_ai(
-        ["ローソン", "スタバ", "ドンキ"],
+        [_BATCH_TEXT_A, _BATCH_TEXT_B, _BATCH_TEXT_C],
         api_key="k",
         base_url=app.GEMINI_PROVIDER,
     )
 
     assert len(single_prompt_calls) == 1
-    assert set(single_prompt_calls[0]) == {"ローソン", "スタバ", "ドンキ"}
+    assert set(single_prompt_calls[0]) == {_BATCH_TEXT_A, _BATCH_TEXT_B, _BATCH_TEXT_C}
     assert per_item_calls == []
-    assert result == {"ローソン": "BATCH:ローソン", "スタバ": "BATCH:スタバ", "ドンキ": "BATCH:ドンキ"}
+    assert result == {
+        _BATCH_TEXT_A: f"BATCH:{_BATCH_TEXT_A}",
+        _BATCH_TEXT_B: f"BATCH:{_BATCH_TEXT_B}",
+        _BATCH_TEXT_C: f"BATCH:{_BATCH_TEXT_C}",
+    }
 
 
 def test_translate_batch_ai_falls_back_per_item_when_batch_misses(monkeypatch):
@@ -106,8 +115,8 @@ def test_translate_batch_ai_falls_back_per_item_when_batch_misses(monkeypatch):
     monkeypatch.setattr(svc, "get_cached_translations", lambda texts, **kw: {})
     monkeypatch.setattr(svc, "save_translations", lambda *a, **kw: None)
 
-    result = app.translate_batch_ai(["ローソン", "スタバ"], api_key="k", base_url=app.GEMINI_PROVIDER)
+    result = app.translate_batch_ai([_BATCH_TEXT_A, _BATCH_TEXT_B], api_key="k", base_url=app.GEMINI_PROVIDER)
 
-    assert result["ローソン"].startswith("BATCH:")
-    assert result["スタバ"].startswith("SINGLE:")
-    assert "スタバ" in per_item_calls
+    assert result[_BATCH_TEXT_A].startswith("BATCH:")
+    assert result[_BATCH_TEXT_B].startswith("SINGLE:")
+    assert _BATCH_TEXT_B in per_item_calls

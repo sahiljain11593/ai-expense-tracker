@@ -1890,3 +1890,36 @@ def clear_translation_cache(db_path: str = DEFAULT_DB_PATH) -> None:
         pass
     finally:
         conn.close()
+
+
+def seed_translation_cache_from_library(db_path: str = DEFAULT_DB_PATH) -> int:
+    """Insert all MERCHANT_LIBRARY entries into the translation_cache (skip if already present).
+
+    Returns the number of new rows inserted.  This is idempotent — safe to call
+    on every app startup.
+    """
+    try:
+        from services.merchants import iter_library_pairs  # type: ignore
+    except Exception:
+        return 0
+
+    conn = get_connection(db_path)
+    inserted = 0
+    try:
+        cur = conn.cursor()
+        for jp_text, en_text in iter_library_pairs():
+            cur.execute(
+                """
+                INSERT OR IGNORE INTO translation_cache (jp_text, en_text, model, provider)
+                VALUES (?, ?, 'merchant_library', 'static')
+                """,
+                (jp_text, en_text),
+            )
+            if cur.rowcount:
+                inserted += 1
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return inserted
