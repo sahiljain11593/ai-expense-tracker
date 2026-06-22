@@ -146,12 +146,38 @@ A single Python script that runs the full AI pipeline against a sample Japanese 
 
 ---
 
+## T10 — Durable Cloud Persistence (DONE — pragmatic phase; full migration pending)
+
+### What was done (June 2026)
+- [x] **Ephemeral-storage warning.** A persistent UI banner now appears whenever Google Drive is not configured/authorized, telling the user their data can be lost on restart.
+- [x] **Auto-backup on save.** After every successful `insert_transactions` call, the app silently attempts a Drive backup if credentials are already in session state.
+
+### What remains (Supabase migration — high effort, needs credentials)
+
+The app currently stores all data in a local SQLite file at `data/expenses.db`.
+On Streamlit Cloud this file is **ephemeral** — it resets on every redeploy or container restart.
+
+**Full migration acceptance criteria:**
+1. Transactions are stored in a Supabase PostgreSQL table (schema mirrors current SQLite).
+2. App can run entirely data-less on first launch (no `data/` directory required).
+3. All existing tests pass against a real or mocked Supabase client.
+4. A one-time migration script exports existing `expenses.db` to Supabase.
+
+**Steps to implement:**
+- Set `SUPABASE_URL` and `SUPABASE_KEY` as Streamlit Cloud secrets.
+- Add `supabase-py` to `requirements.txt`.
+- Create `data_store_supabase.py` with the same public API as `data_store.py`.
+- Gate the import: if `SUPABASE_URL` is set, use Supabase; otherwise fall back to SQLite.
+- Migrate schema (tables: transactions, imports, settings, merchant_learning, translation_cache, etc.).
+- Write a one-time `scripts/migrate_sqlite_to_supabase.py`.
+
+---
+
 ## Future / Backlog (not yet prioritized)
 
 - Receipt scanning with stronger OCR (PaddleOCR, surya)
 - Budget envelope system
 - Email notifications for unusual spending
 - Mobile app (React Native)
-- Supabase migration for cloud persistence + multi-device
 - Native Anthropic Claude provider (similar pattern to Gemini integration)
 - Streaming responses for very long files

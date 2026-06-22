@@ -1615,7 +1615,21 @@ def main() -> None:
     
     # View Saved Transactions Section
     st.divider()
-    
+
+    # Ephemeral-storage safety notice (only on Streamlit Cloud, or when Drive not configured)
+    _drive_creds_present = bool(st.session_state.get("drive_creds"))
+    _google_secrets_present = bool(
+        hasattr(st, "secrets") and st.secrets.get("google", {}).get("client_id")
+    )
+    if not _drive_creds_present and not _google_secrets_present:
+        st.warning(
+            "⚠️ **Data persistence notice:** Your SQLite database is stored on the local "
+            "container filesystem. On Streamlit Cloud, this resets on every app restart or "
+            "redeploy. **Authorize Google Drive** in the section below to enable automatic "
+            "backups after each save, or download a manual backup to keep your data safe.",
+            icon="💾",
+        )
+
     # Check if there are any transactions to show a notification
     try:
         if load_all_transactions is not None:
@@ -2962,12 +2976,29 @@ def main() -> None:
                         review_rows = filtered_rows
 
                     inserted, dupes, _ = insert_transactions(review_rows, batch_id)  # type: ignore
-                    
+
                     # Show prominent success message
                     if inserted > 0:
                         st.success(f"🎉 **SUCCESS!** Inserted {inserted} transactions to database. Skipped {dupes} duplicates.")
                         st.balloons()  # Celebration animation
                         st.info("💡 **Next step:** Scroll to the top and expand '📊 View Saved Transactions' to see your data!")
+
+                        # Auto-backup to Drive if already authorised
+                        try:
+                            from drive_backup import upload_bytes
+                            drive_creds = st.session_state.get("drive_creds")
+                            if drive_creds and backup_database is not None:
+                                bkp_path = backup_database()
+                                if bkp_path:
+                                    with open(bkp_path, "rb") as f:
+                                        bkp_data = f.read()
+                                    import datetime as _dt
+                                    ts_label = _dt.datetime.utcnow().strftime("%Y%m%d_%H%M%S")
+                                    folder_id = st.secrets.get("google", {}).get("drive_folder_id") if hasattr(st, "secrets") else None
+                                    upload_bytes(drive_creds, folder_id, f"expenses_autobkp_{ts_label}.db", bkp_data)
+                                    st.caption("☁️ Auto-backup to Drive completed.")
+                        except Exception:
+                            pass  # Silent — auto-backup is best-effort
                     else:
                         st.warning(f"No new transactions inserted. Skipped {dupes} duplicates.")
                 except Exception as e:
