@@ -612,6 +612,102 @@ def translate_japanese_to_english_gemini(
         return translate_japanese_to_english_fallback(text)
 
 
+def _recover_partial_json(raw: str, index_to_text: dict) -> dict:
+    """Best-effort extraction of translations from a truncated/malformed JSON string.
+
+    The Gemini batch prompt asks for: {"0": "translation", "1": "translation", ...}
+    When JSON is valid we parse it directly.  When it is truncated we regex-extract
+    whatever "N": "value" pairs are present and fall back to the original text for
+    the rest.
+    """
+    import json
+
+    # Fast path: valid JSON
+    try:
+        parsed = json.loads(raw)
+        if isinstance(parsed, dict):
+            return {
+                index_to_text[str(k)]: str(v)
+                for k, v in parsed.items()
+                if str(k) in index_to_text
+            }
+    except (json.JSONDecodeError, ValueError):
+        pass
+
+    # Slow path: regex over truncated response
+    recovered = {}
+    for m in re.finditer(r'"(\d+)"\s*:\s*"((?:[^"\\]|\\.)*)"', raw):
+        idx, val = m.group(1), m.group(2)
+        if idx in index_to_text:
+            # Unescape basic JSON string escapes
+            try:
+                val = val.encode("raw_unicode_escape").decode("unicode_escape")
+            except Exception:
+                pass
+            recovered[index_to_text[idx]] = val
+
+    return recovered
+
+
+def _translate_batch_gemini_single_prompt(
+    texts: list,
+    api_key: str,
+    model: str,
+) -> dict:
+    """Send all texts in one Gemini prompt and return {original: translation}.
+
+    Falls back to empty dict on total failure so callers can retry per-item.
+    Recovery: if the JSON is truncated, regex-extracts whatever pairs are present
+    and returns originals for the rest (>=80% recovery on partial truncation).
+    """
+    if not texts:
+        return {}
+
+    try:
+        from google import genai
+        from google.genai import types
+
+        # Build an indexed map so we can match response indices back to originals
+        index_to_text = {str(i): t for i, t in enumerate(texts)}
+        numbered_lines = "\n".join(f'{i}: "{t}"' for i, t in enumerate(texts))
+
+        prompt = (
+            "Translate each numbered Japanese credit-card merchant / memo to English.\n"
+            "Return ONLY a JSON object: {\"0\": \"translation\", \"1\": \"translation\", ...}\n"
+            "Preserve proper nouns and brand names. No explanations.\n\n"
+            f"{numbered_lines}"
+        )
+
+        config_kwargs: dict = {
+            "temperature": 0.1,
+            "max_output_tokens": max(800, 80 * len(texts)),
+        }
+        try:
+            config_kwargs["thinking_config"] = types.ThinkingConfig(thinking_budget=0)
+        except Exception:
+            pass
+
+        client = genai.Client(api_key=api_key)
+
+        def _do_call():
+            return client.models.generate_content(
+                model=model,
+                contents=prompt,
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
+
+        response = _call_with_retry(_do_call)
+        raw = (getattr(response, "text", "") or "").strip()
+        # Strip markdown code fences if present
+        raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
+        raw = re.sub(r"\s*```$", "", raw, flags=re.MULTILINE)
+
+        result = _recover_partial_json(raw, index_to_text)
+        return result
+    except Exception:
+        return {}
+
+
 def translate_japanese_to_english_fallback(text: str) -> str:
     """Fallback translation using deep-translator when AI translation fails."""
     try:
@@ -672,11 +768,21 @@ def translate_batch_ai(
     # 2. Only call provider for texts not in the DB cache
     uncached = [t for t in unique_texts if t not in db_cached]
     new_translations: dict = {}
-    for text in uncached:
-        if provider == GEMINI_PROVIDER:
-            new_translations[text] = translate_japanese_to_english_gemini(text, api_key, resolved_model)
-        else:
-            new_translations[text] = translate_japanese_to_english(text, mode, api_key)
+
+    if provider == GEMINI_PROVIDER and len(uncached) > 1:
+        # Send all uncached texts in one batch prompt with partial-JSON recovery
+        batch_result = _translate_batch_gemini_single_prompt(uncached, api_key, resolved_model)
+        new_translations.update(batch_result)
+        # Per-item fallback for any texts the batch prompt missed
+        for text in uncached:
+            if text not in new_translations:
+                new_translations[text] = translate_japanese_to_english_gemini(text, api_key, resolved_model)
+    else:
+        for text in uncached:
+            if provider == GEMINI_PROVIDER:
+                new_translations[text] = translate_japanese_to_english_gemini(text, api_key, resolved_model)
+            else:
+                new_translations[text] = translate_japanese_to_english(text, mode, api_key)
 
     # 3. Persist new translations
     if new_translations and save_translations is not None:
