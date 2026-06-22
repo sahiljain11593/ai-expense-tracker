@@ -762,7 +762,38 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
         with col3:
             amount_col = st.selectbox("Amount column:", df.columns, index=2)
     
-    # Process the data with progress bar
+    # ── Pre-translate all descriptions in one batch call ──────────────────────
+    # Collect unique non-empty descriptions first so each merchant is sent to
+    # the AI provider exactly once (even if it appears in many rows).
+    all_raw_descs = [
+        str(row[desc_col]).strip()
+        for _, row in df.iterrows()
+        if str(row[desc_col]).strip() and not pd.isna(str(row[desc_col]).strip())
+    ]
+    translation_map: dict = {}
+    needs_ai = translation_mode in (
+        GEMINI_TRANSLATION_MODE, OPENAI_TRANSLATION_MODE, LEGACY_OPENAI_TRANSLATION_MODE,
+        "AI-Powered (GPT-3.5)",
+    )
+    if needs_ai and all_raw_descs:
+        status_text_pre = st.empty()
+        status_text_pre.text(
+            f"🌐 Batch-translating {len(set(all_raw_descs))} unique descriptions…"
+        )
+        translation_map = translate_batch_ai(
+            all_raw_descs,
+            api_key=api_key,
+            base_url=GEMINI_PROVIDER if translation_mode == GEMINI_TRANSLATION_MODE else None,
+        )
+        status_text_pre.empty()
+
+    def _translate_desc(raw: str) -> str:
+        """Return translation from batch map, or fall back to per-row helper."""
+        if raw in translation_map:
+            return translation_map[raw]
+        return translate_japanese_to_english(raw, translation_mode, api_key)
+
+    # ── Process the data with progress bar ────────────────────────────────────
     st.write("🔄 **Processing transactions...**")
     
     # Create progress bar
@@ -820,9 +851,9 @@ def extract_transactions_from_csv(file_stream: io.BytesIO, translation_mode: str
             if pd.isna(description) or description == '':
                 continue
             
-            # Translate Japanese description to English
+            # Use batch-translated result (or fall back for free/no-translate modes)
             original_description = description
-            description = translate_japanese_to_english(description, translation_mode, api_key)
+            description = _translate_desc(description)
                 
             # Handle amount (could be positive or negative)
             amount_str = str(row[amount_col]).strip()
