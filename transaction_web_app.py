@@ -539,6 +539,41 @@ def _call_with_retry(fn, *args, max_attempts: int = 3, base_delay: float = 1.0, 
     raise last_exc
 
 
+_COST_PER_1M = {
+    # (input_usd, output_usd) per 1M tokens — free tier is $0 but we show paid rates for info
+    DEFAULT_GEMINI_MODEL: (0.25, 1.50),
+    DEFAULT_OPENAI_MODEL: (0.15, 0.60),
+}
+
+_AI_USAGE_KEY = "ai_usage"
+
+
+def _record_usage(
+    provider: str,
+    model: str,
+    input_tokens: int,
+    output_tokens: int,
+    was_fallback: bool = False,
+) -> None:
+    """Accumulate token/cost stats into st.session_state['ai_usage'] if available."""
+    try:
+        usage = st.session_state.setdefault(
+            _AI_USAGE_KEY,
+            {"calls": 0, "retries": 0, "fallbacks": 0, "input_tokens": 0, "output_tokens": 0, "cost_usd": 0.0, "provider": provider, "model": model},
+        )
+        usage["calls"] += 1
+        usage["input_tokens"] += input_tokens
+        usage["output_tokens"] += output_tokens
+        if was_fallback:
+            usage["fallbacks"] += 1
+        rates = _COST_PER_1M.get(model, (0.0, 0.0))
+        usage["cost_usd"] += (input_tokens * rates[0] + output_tokens * rates[1]) / 1_000_000
+        usage["provider"] = provider
+        usage["model"] = model
+    except Exception:
+        pass
+
+
 def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
     """Translate Japanese text to English using OpenAI for high accuracy."""
     try:
@@ -582,12 +617,19 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
 
         response = _call_with_retry(_do_openai_call)
         translated = response.choices[0].message.content.strip()
+        # Record token usage
+        try:
+            u = response.usage
+            _record_usage(OPENAI_PROVIDER, DEFAULT_OPENAI_MODEL, u.prompt_tokens, u.completion_tokens)
+        except Exception:
+            pass
         # Restore protected merchant names
         translated = restore_known_merchants(translated, placeholders)
         return translated
         
     except Exception as e:
         st.warning(f"AI translation failed for '{text}': {e}")
+        _record_usage(OPENAI_PROVIDER, DEFAULT_OPENAI_MODEL, 0, 0, was_fallback=True)
         # Fallback to free translation
         return translate_japanese_to_english_fallback(text)
 
@@ -642,10 +684,17 @@ def translate_japanese_to_english_gemini(
         translated = (getattr(response, "text", "") or "").strip()
         if not translated:
             raise RuntimeError("Gemini returned an empty translation")
+        # Record token usage
+        try:
+            um = response.usage_metadata
+            _record_usage(GEMINI_PROVIDER, model, um.prompt_token_count, um.candidates_token_count)
+        except Exception:
+            pass
 
         return restore_known_merchants(translated, placeholders)
     except Exception as e:
         st.warning(f"Gemini translation failed for '{text}': {e}")
+        _record_usage(GEMINI_PROVIDER, model or DEFAULT_GEMINI_MODEL, 0, 0, was_fallback=True)
         return translate_japanese_to_english_fallback(text)
 
 
@@ -735,6 +784,12 @@ def _translate_batch_gemini_single_prompt(
 
         response = _call_with_retry(_do_call)
         raw = (getattr(response, "text", "") or "").strip()
+        # Record token usage
+        try:
+            um = response.usage_metadata
+            _record_usage(GEMINI_PROVIDER, model, um.prompt_token_count, um.candidates_token_count)
+        except Exception:
+            pass
         # Strip markdown code fences if present
         raw = re.sub(r"^```(?:json)?\s*", "", raw, flags=re.MULTILINE)
         raw = re.sub(r"\s*```$", "", raw, flags=re.MULTILINE)
@@ -1966,7 +2021,38 @@ def main() -> None:
             3. Add it to Streamlit secrets as `[gemini].api_key`
             4. Or paste it above for this session
             """)
-    
+
+    # AI usage meter (shows after first translation call this session)
+    usage = st.session_state.get(_AI_USAGE_KEY)
+    if usage and usage.get("calls", 0) > 0:
+        with st.sidebar.expander("📊 AI Usage this session", expanded=False):
+            col_a, col_b = st.columns(2)
+            with col_a:
+                st.metric("API calls", usage["calls"])
+                st.metric("Fallbacks", usage["fallbacks"])
+            with col_b:
+                st.metric("Tokens in", f"{usage['input_tokens']:,}")
+                st.metric("Tokens out", f"{usage['output_tokens']:,}")
+            cost = usage.get("cost_usd", 0.0)
+            model_label = usage.get("model", "")
+            st.caption(
+                f"~${cost:.4f} USD · {usage.get('provider','').title()} · {model_label}"
+            )
+            cache_size = 0
+            if get_translation_cache_size is not None:
+                try:
+                    cache_size = get_translation_cache_size()
+                except Exception:
+                    pass
+            st.caption(f"Translation cache: {cache_size:,} entries")
+            if clear_translation_cache is not None and st.button("🗑️ Clear translation cache", key="clear_tx_cache"):
+                try:
+                    clear_translation_cache()
+                    st.success("Cache cleared")
+                    st.rerun()
+                except Exception as exc:
+                    st.error(str(exc))
+
     # Smart Learning Dashboard (collapsed in sidebar — easier on mobile)
     if learning_system:
         with st.sidebar.expander("🧠 Smart Learning Dashboard", expanded=False):
