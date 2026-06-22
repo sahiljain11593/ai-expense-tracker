@@ -1973,13 +1973,35 @@ def main() -> None:
         OPENAI_TRANSLATION_MODE,
         "No Translation",
     ]
-    default_translation_index = 1 if gemini_key else 0
+
+    # Restore last-used mode from the DB settings table
+    _saved_mode = None
+    if get_setting is not None:
+        try:
+            _saved_mode = get_setting("ai_translation_mode")
+        except Exception:
+            pass
+
+    if _saved_mode in translation_options:
+        _restore_idx = translation_options.index(_saved_mode)
+    elif gemini_key:
+        _restore_idx = 1  # Gemini when key is available
+    else:
+        _restore_idx = 0  # Free Fallback
+
     translation_mode = st.sidebar.selectbox(
         "Translation Mode",
         translation_options,
-        index=default_translation_index,
+        index=_restore_idx,
         help="Gemini uses the current free-tier Flash-Lite model; Free Fallback uses Google Translate.",
     )
+
+    # Persist the chosen mode whenever it changes
+    if set_setting is not None:
+        try:
+            set_setting("ai_translation_mode", translation_mode)
+        except Exception:
+            pass
 
     api_key = None
     if translation_mode == GEMINI_TRANSLATION_MODE:
