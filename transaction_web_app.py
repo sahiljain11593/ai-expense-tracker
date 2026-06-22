@@ -461,6 +461,47 @@ def _provider_from_mode(mode: str, model: str = None, base_url: str = None) -> s
     return OPENAI_PROVIDER
 
 
+def _is_retryable_error(exc: Exception) -> bool:
+    """Return True for transient API errors that are worth retrying."""
+    msg = str(exc).lower()
+    retryable_markers = (
+        "429",       # rate limit
+        "500",       # internal server error
+        "502",       # bad gateway
+        "503",       # service unavailable
+        "504",       # gateway timeout
+        "rate limit",
+        "quota",
+        "too many requests",
+        "timeout",
+        "connection",
+        "network",
+    )
+    return any(m in msg for m in retryable_markers)
+
+
+def _call_with_retry(fn, *args, max_attempts: int = 3, base_delay: float = 1.0, **kwargs):
+    """Call fn(*args, **kwargs) up to max_attempts times with exponential backoff.
+
+    Retries only on transient (_is_retryable_error) exceptions.  Re-raises on
+    the final attempt or on non-retryable errors.
+    """
+    import time
+    import random
+    last_exc = None
+    for attempt in range(max_attempts):
+        try:
+            return fn(*args, **kwargs)
+        except Exception as exc:
+            if not _is_retryable_error(exc):
+                raise
+            last_exc = exc
+            if attempt < max_attempts - 1:
+                delay = base_delay * (2 ** attempt) + random.uniform(0, 0.5)
+                time.sleep(delay)
+    raise last_exc
+
+
 def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
     """Translate Japanese text to English using OpenAI for high accuracy."""
     try:
@@ -491,17 +532,18 @@ def translate_japanese_to_english_ai(text: str, api_key: str = None) -> str:
         
         English translation:"""
         
-        # Get translation from the default lightweight OpenAI model
-        response = client.chat.completions.create(
-            model=DEFAULT_OPENAI_MODEL,
-            messages=[
-                {"role": "system", "content": "You are a professional translator specializing in financial documents. Translate Japanese to English accurately, especially for merchant names and financial terms."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=100,
-            temperature=0.1  # Low temperature for consistent translations
-        )
-        
+        def _do_openai_call():
+            return client.chat.completions.create(
+                model=DEFAULT_OPENAI_MODEL,
+                messages=[
+                    {"role": "system", "content": "You are a professional translator specializing in financial documents. Translate Japanese to English accurately, especially for merchant names and financial terms."},
+                    {"role": "user", "content": prompt}
+                ],
+                max_tokens=100,
+                temperature=0.1,
+            )
+
+        response = _call_with_retry(_do_openai_call)
         translated = response.choices[0].message.content.strip()
         # Restore protected merchant names
         translated = restore_known_merchants(translated, placeholders)
@@ -546,16 +588,20 @@ def translate_japanese_to_english_gemini(
             pass
 
         client = genai.Client(api_key=api_key)
-        response = client.models.generate_content(
-            model=model,
-            contents=(
-                "Translate this Japanese credit-card statement merchant or memo "
-                "to concise English. Preserve merchant names and financial terms. "
-                "Return only the English translation.\n\n"
-                f"Japanese text: {protected_text}"
-            ),
-            config=types.GenerateContentConfig(**config_kwargs),
-        )
+
+        def _do_gemini_call():
+            return client.models.generate_content(
+                model=model,
+                contents=(
+                    "Translate this Japanese credit-card statement merchant or memo "
+                    "to concise English. Preserve merchant names and financial terms. "
+                    "Return only the English translation.\n\n"
+                    f"Japanese text: {protected_text}"
+                ),
+                config=types.GenerateContentConfig(**config_kwargs),
+            )
+
+        response = _call_with_retry(_do_gemini_call)
         translated = (getattr(response, "text", "") or "").strip()
         if not translated:
             raise RuntimeError("Gemini returned an empty translation")
