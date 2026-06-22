@@ -235,6 +235,20 @@ def _create_missing_tables(cur: sqlite3.Cursor) -> None:
         """
     )
 
+    # user merchant library — user-curated + auto-learned JP→EN mappings
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS user_merchant_library (
+          jp_text    TEXT PRIMARY KEY,
+          en_text    TEXT NOT NULL,
+          source     TEXT NOT NULL DEFAULT 'auto',   -- 'auto' | 'user' | 'static'
+          notes      TEXT,
+          added_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+          updated_at TEXT DEFAULT CURRENT_TIMESTAMP
+        )
+        """
+    )
+
     # discarded duplicates
     cur.execute(
         """
@@ -406,6 +420,20 @@ def init_db(db_path: str = DEFAULT_DB_PATH) -> None:
               confidence_score REAL DEFAULT 0.5,
               last_updated TEXT NOT NULL,
               UNIQUE(merchant, context_key, context_value, category, subcategory)
+            )
+            """
+        )
+
+        # user merchant library
+        cur.execute(
+            """
+            CREATE TABLE IF NOT EXISTS user_merchant_library (
+              jp_text    TEXT PRIMARY KEY,
+              en_text    TEXT NOT NULL,
+              source     TEXT NOT NULL DEFAULT 'auto',
+              notes      TEXT,
+              added_at   TEXT DEFAULT CURRENT_TIMESTAMP,
+              updated_at TEXT DEFAULT CURRENT_TIMESTAMP
             )
             """
         )
@@ -1923,3 +1951,139 @@ def seed_translation_cache_from_library(db_path: str = DEFAULT_DB_PATH) -> int:
     finally:
         conn.close()
     return inserted
+
+
+# ── User merchant library ──────────────────────────────────────────────────────
+
+
+def upsert_user_merchant(
+    jp_text: str,
+    en_text: str,
+    source: str = "auto",
+    notes: str = None,
+    db_path: str = DEFAULT_DB_PATH,
+) -> bool:
+    """Insert or update a user merchant mapping.  Returns True if a new row was created."""
+    if not jp_text or not en_text:
+        return False
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute(
+            """
+            INSERT INTO user_merchant_library (jp_text, en_text, source, notes, updated_at)
+            VALUES (?, ?, ?, ?, CURRENT_TIMESTAMP)
+            ON CONFLICT(jp_text) DO UPDATE SET
+              en_text    = excluded.en_text,
+              source     = CASE WHEN user_merchant_library.source = 'user' THEN 'user'
+                                ELSE excluded.source END,
+              notes      = COALESCE(excluded.notes, user_merchant_library.notes),
+              updated_at = CURRENT_TIMESTAMP
+            """,
+            (jp_text, en_text, source, notes),
+        )
+        new_row = cur.lastrowid is not None and cur.rowcount == 1
+        conn.commit()
+        return new_row
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def bulk_upsert_user_merchants(
+    mapping: Dict[str, str],
+    source: str = "auto",
+    db_path: str = DEFAULT_DB_PATH,
+) -> int:
+    """Bulk upsert {jp_text: en_text} pairs.  Returns count of new rows inserted."""
+    if not mapping:
+        return 0
+    conn = get_connection(db_path)
+    inserted = 0
+    try:
+        cur = conn.cursor()
+        for jp_text, en_text in mapping.items():
+            if not jp_text or not en_text:
+                continue
+            cur.execute(
+                """
+                INSERT INTO user_merchant_library (jp_text, en_text, source, updated_at)
+                VALUES (?, ?, ?, CURRENT_TIMESTAMP)
+                ON CONFLICT(jp_text) DO UPDATE SET
+                  en_text    = excluded.en_text,
+                  updated_at = CURRENT_TIMESTAMP
+                """,
+                (jp_text, en_text, source),
+            )
+            if cur.rowcount:
+                inserted += 1
+        conn.commit()
+    except Exception:
+        pass
+    finally:
+        conn.close()
+    return inserted
+
+
+def load_user_merchant_library(db_path: str = DEFAULT_DB_PATH) -> List[Dict]:
+    """Return all user merchant library entries as list of dicts."""
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.row_factory = sqlite3.Row
+        cur.execute(
+            "SELECT jp_text, en_text, source, notes, added_at, updated_at "
+            "FROM user_merchant_library ORDER BY updated_at DESC"
+        )
+        return [dict(r) for r in cur.fetchall()]
+    except Exception:
+        return []
+    finally:
+        conn.close()
+
+
+def get_user_merchant_translations(
+    jp_texts: List[str],
+    db_path: str = DEFAULT_DB_PATH,
+) -> Dict[str, str]:
+    """Return {jp_text: en_text} for texts present in user_merchant_library."""
+    if not jp_texts:
+        return {}
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        placeholders = ",".join(["?"] * len(jp_texts))
+        cur.execute(
+            f"SELECT jp_text, en_text FROM user_merchant_library WHERE jp_text IN ({placeholders})",
+            jp_texts,
+        )
+        return {row[0]: row[1] for row in cur.fetchall()}
+    except Exception:
+        return {}
+    finally:
+        conn.close()
+
+
+def delete_user_merchant(jp_text: str, db_path: str = DEFAULT_DB_PATH) -> bool:
+    conn = get_connection(db_path)
+    try:
+        conn.execute("DELETE FROM user_merchant_library WHERE jp_text = ?", (jp_text,))
+        conn.commit()
+        return True
+    except Exception:
+        return False
+    finally:
+        conn.close()
+
+
+def get_user_merchant_library_size(db_path: str = DEFAULT_DB_PATH) -> int:
+    conn = get_connection(db_path)
+    try:
+        cur = conn.cursor()
+        cur.execute("SELECT COUNT(*) FROM user_merchant_library")
+        return cur.fetchone()[0]
+    except Exception:
+        return 0
+    finally:
+        conn.close()

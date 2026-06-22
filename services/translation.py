@@ -368,9 +368,11 @@ def _translate_batch_gemini_single_prompt(texts: list, api_key: str, model: str)
 
 try:
     from data_store import get_cached_translations, save_translations  # type: ignore
+    from data_store import bulk_upsert_user_merchants  # type: ignore
 except Exception:
     get_cached_translations = None  # type: ignore
     save_translations = None  # type: ignore
+    bulk_upsert_user_merchants = None  # type: ignore
 
 
 def translate_batch_ai(
@@ -381,9 +383,14 @@ def translate_batch_ai(
 ) -> dict:
     """Translate a batch of descriptions.  Resolution order (cheapest first):
 
-    Step 0 │ Static MERCHANT_LIBRARY  (in-memory, ~0 μs, zero cost)
-    Step 1 │ SQLite translation_cache (DB lookup, ~1 ms, zero cost)
-    Step 2 │ AI provider call         (~1–5 s, may cost tokens)
+    Step 0 │ Static MERCHANT_LIBRARY + user_merchant_library  (in-memory / DB)
+    Step 1 │ SQLite translation_cache  (DB lookup, ~1 ms, zero cost)
+    Step 2 │ AI provider call          (~1–5 s, may cost tokens)
+
+    Any text that reaches Step 2 (AI) and gets a translation is automatically
+    saved to user_merchant_library so it never needs an AI call again.
+    The set of newly-learned jp_texts is recorded in
+    st.session_state['newly_learned_merchants'] so the review UI can badge them.
     """
     from services.merchants import apply_merchant_library  # type: ignore
 
@@ -432,6 +439,22 @@ def translate_batch_ai(
     if new_translations and _save is not None:
         try:
             _save(new_translations, model=resolved_model, provider=provider)
+        except Exception:
+            pass
+
+    # ── Auto-save new AI translations to user merchant library ────────────────
+    if new_translations:
+        import services.translation as _self
+        _bulk_upsert = _self.bulk_upsert_user_merchants
+        if _bulk_upsert is not None:
+            try:
+                _bulk_upsert(new_translations, source="auto")
+            except Exception:
+                pass
+        # Record in session state for UI badging
+        try:
+            existing = st.session_state.setdefault("newly_learned_merchants", set())
+            existing.update(new_translations.keys())
         except Exception:
             pass
 

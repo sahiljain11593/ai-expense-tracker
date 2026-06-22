@@ -96,6 +96,12 @@ try:
         get_translation_cache_size,
         clear_translation_cache,
         seed_translation_cache_from_library,
+        upsert_user_merchant,
+        bulk_upsert_user_merchants,
+        load_user_merchant_library,
+        get_user_merchant_translations,
+        delete_user_merchant,
+        get_user_merchant_library_size,
     )
 except Exception as _e:
     # Allow the app to still render other parts; show a soft warning
@@ -126,6 +132,12 @@ except Exception as _e:
     get_translation_cache_size = None  # type: ignore
     clear_translation_cache = None  # type: ignore
     seed_translation_cache_from_library = None  # type: ignore
+    upsert_user_merchant = None  # type: ignore
+    bulk_upsert_user_merchants = None  # type: ignore
+    load_user_merchant_library = None  # type: ignore
+    get_user_merchant_translations = None  # type: ignore
+    delete_user_merchant = None  # type: ignore
+    get_user_merchant_library_size = None  # type: ignore
 
 # Auth UI (Firebase Google Sign-In)
 try:
@@ -2456,10 +2468,15 @@ def main() -> None:
                     except (ValueError, IndexError):
                         suggested_index = 0
 
+                    _newly_learned = st.session_state.get("newly_learned_merchants", set())
+                    _orig_desc = str(row.get("original_description", ""))
+                    _is_new_merchant = bool(_orig_desc and _orig_desc in _newly_learned)
+                    _new_badge = " 📚 **New**" if _is_new_merchant else ""
+
                     if compact_bulk:
                         with st.container(border=True):
                             trans_type = row.get("transaction_type", "Expense")
-                            st.markdown(f"**📅 {date_str}** · ¥{row['amount']:,} · {trans_type}")
+                            st.markdown(f"**📅 {date_str}** · ¥{row['amount']:,} · {trans_type}{_new_badge}")
                             st.caption(str(row["description"])[:120])
                             if row.get("original_description"):
                                 st.caption(f"🇯🇵 {row['original_description']}")
@@ -2470,7 +2487,8 @@ def main() -> None:
                         col1, col2, col3, col4, col5, col6, col7 = st.columns([2, 2, 2, 1, 1, 1, 1])
                         with col1:
                             st.write(f"**📅 {date_str}**")
-                            st.write(f"**{row['description'][:40]}...**")
+                            desc_display = str(row["description"])[:40]
+                            st.write(f"**{desc_display}**{_new_badge}")
                         with col2:
                             if row.get("original_description"):
                                 st.write(f"**🇯🇵 {row['original_description'][:30]}...**")
@@ -3277,6 +3295,93 @@ def main() -> None:
                             st.error(f"Drive CSV upload failed: {e}")
         except Exception as e:
             st.info("Google Drive not configured. Add [google] secrets to enable.")
+
+        # ── Merchant Library management ───────────────────────────────────────
+        st.divider()
+        st.subheader("📚 Merchant Library")
+        st.caption(
+            "Manage your Japanese→English merchant translations.  "
+            "Entries here are checked before the AI provider is called, "
+            "so adding a merchant here saves tokens on every future upload."
+        )
+
+        _lib_tab1, _lib_tab2 = st.tabs(["Learned merchants", "Add / import"])
+
+        with _lib_tab1:
+            if load_user_merchant_library is not None:
+                try:
+                    _user_lib = load_user_merchant_library()
+                    if _user_lib:
+                        from services.merchants import merchant_library_size
+                        st.caption(
+                            f"**{len(_user_lib)} user-learned** entries · "
+                            f"**{merchant_library_size()} static** entries in built-in library"
+                        )
+                        # Editable table
+                        _lib_df = pd.DataFrame(_user_lib)[["jp_text", "en_text", "source", "added_at"]]
+                        _lib_df.columns = ["JP Text", "English Name", "Source", "Added"]
+                        st.dataframe(_lib_df, use_container_width=True, height=300)
+
+                        # Per-row delete
+                        with st.expander("🗑️ Delete a merchant", expanded=False):
+                            _del_opts = [f"{r['jp_text']} → {r['en_text']}" for r in _user_lib]
+                            _del_sel = st.selectbox("Select entry to delete", _del_opts, key="lib_del_sel")
+                            if st.button("Delete selected", key="lib_del_btn") and _del_sel:
+                                _jp_to_del = _del_sel.split(" → ")[0]
+                                if delete_user_merchant is not None:
+                                    delete_user_merchant(_jp_to_del)
+                                    st.success(f"Deleted: {_jp_to_del}")
+                                    st.rerun()
+
+                        # Bulk edit: correct a wrong translation
+                        with st.expander("✏️ Correct a translation", expanded=False):
+                            _edit_opts = [r["jp_text"] for r in _user_lib]
+                            _edit_jp = st.selectbox("Japanese text", _edit_opts, key="lib_edit_jp")
+                            _edit_current = next((r["en_text"] for r in _user_lib if r["jp_text"] == _edit_jp), "")
+                            _edit_en = st.text_input("Correct English name", value=_edit_current, key="lib_edit_en")
+                            if st.button("Save correction", key="lib_edit_btn") and _edit_jp and _edit_en:
+                                if upsert_user_merchant is not None:
+                                    upsert_user_merchant(_edit_jp, _edit_en, source="user")
+                                    st.success(f"Updated: {_edit_jp} → {_edit_en}")
+                                    st.rerun()
+                    else:
+                        st.info(
+                            "No user-learned merchants yet. Upload a file with AI translation "
+                            "enabled and merchants will be automatically saved here."
+                        )
+                except Exception as _e:
+                    st.error(f"Error loading merchant library: {_e}")
+
+        with _lib_tab2:
+            st.markdown("**Add a single merchant**")
+            _add_jp = st.text_input("Japanese text (as it appears on your statement)", key="lib_add_jp", placeholder="e.g. スパイスファクトリー")
+            _add_en = st.text_input("English name", key="lib_add_en", placeholder="e.g. Spice Factory")
+            _add_note = st.text_input("Notes (optional)", key="lib_add_note", placeholder="e.g. restaurant in Shinjuku")
+            if st.button("➕ Add to library", key="lib_add_btn"):
+                if _add_jp and _add_en:
+                    if upsert_user_merchant is not None:
+                        upsert_user_merchant(_add_jp.strip(), _add_en.strip(), source="user", notes=_add_note.strip() or None)
+                        st.success(f"Added: {_add_jp} → {_add_en}")
+                        st.rerun()
+                else:
+                    st.warning("Both Japanese text and English name are required.")
+
+            st.divider()
+            st.markdown("**Bulk import (CSV)**")
+            st.caption("Upload a two-column CSV: `jp_text,en_text` (one pair per row, no header required).")
+            _bulk_file = st.file_uploader("Choose CSV", type=["csv"], key="lib_bulk_upload")
+            if _bulk_file and st.button("Import", key="lib_bulk_btn"):
+                try:
+                    _bulk_df = pd.read_csv(_bulk_file, header=None, names=["jp_text", "en_text"])
+                    _bulk_map = {str(r.jp_text).strip(): str(r.en_text).strip() for _, r in _bulk_df.iterrows() if r.jp_text and r.en_text}
+                    if _bulk_map and bulk_upsert_user_merchants is not None:
+                        _n = bulk_upsert_user_merchants(_bulk_map, source="user")
+                        st.success(f"Imported {_n} new merchant(s) from CSV.")
+                        st.rerun()
+                    else:
+                        st.warning("No valid rows found in the CSV.")
+                except Exception as _e:
+                    st.error(f"Import failed: {_e}")
 
         # Prepare data for display with better formatting
         display_df = df_cat.copy()

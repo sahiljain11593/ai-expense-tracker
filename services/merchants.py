@@ -517,20 +517,47 @@ def lookup_merchant(raw_text: str) -> Optional[str]:
 
 
 def apply_merchant_library(texts: list[str]) -> tuple[dict, list[str]]:
-    """Resolve as many texts as possible from the library.
+    """Resolve as many texts as possible from the static + user merchant libraries.
+
+    Checks (in order):
+    1. Static MERCHANT_LIBRARY (this module)
+    2. user_merchant_library DB table (user-curated + auto-learned entries)
 
     Returns:
         resolved   — {raw_text: english_name} for library hits
-        unresolved — list of texts not in the library (need DB cache / AI)
+        unresolved — list of texts not in either library (need DB cache / AI)
     """
+    # Step 1: static library
     resolved: dict = {}
-    unresolved: list = []
+    after_static: list = []
     for text in texts:
         hit = lookup_merchant(text)
         if hit is not None:
             resolved[text] = hit
         else:
-            unresolved.append(text)
+            after_static.append(text)
+
+    if not after_static:
+        return resolved, []
+
+    # Step 2: user merchant library (DB) — exact match on normalized text
+    try:
+        from data_store import get_user_merchant_translations  # type: ignore
+        if after_static:
+            # Try both raw and normalized forms
+            normalized_map = {_normalize(t): t for t in after_static}
+            db_hits = get_user_merchant_translations(after_static)
+            # Also try normalized keys
+            db_hits_norm = get_user_merchant_translations(list(normalized_map.keys()))
+            for norm_key, orig in normalized_map.items():
+                if norm_key in db_hits_norm and orig not in db_hits:
+                    db_hits[orig] = db_hits_norm[norm_key]
+            for text, en in db_hits.items():
+                resolved[text] = en
+    except Exception:
+        db_hits = {}
+
+    unresolved = [t for t in after_static if t not in resolved]
     return resolved, unresolved
 
 
