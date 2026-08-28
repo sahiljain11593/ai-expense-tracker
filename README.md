@@ -136,6 +136,8 @@ streamlit run transaction_web_app.py
 
 #### Step 2: Configure Secrets (Settings → Secrets)
 
+Copy `streamlit.secrets.toml.example` to `.streamlit/secrets.toml` for local dev, or paste the same sections into Streamlit Cloud **Settings → Secrets**.
+
 **Firebase Authentication** (Optional - for single-user access control):
 ```toml
 [firebase]
