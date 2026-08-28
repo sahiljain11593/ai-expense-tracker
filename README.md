@@ -19,10 +19,10 @@ A smart expense tracking application that automatically categorizes transactions
 
 ### Installation
 
-1. **Clone the repository**
+1. **Clone the repository** (or [fork on GitHub](https://github.com/sahiljain11593/ai-expense-tracker/fork) first, then clone your fork)
    ```bash
-   git clone <your-repo-url>
-   cd expense-tracker
+   git clone https://github.com/sahiljain11593/ai-expense-tracker.git
+   cd ai-expense-tracker
    ```
 
 2. **Install dependencies**
