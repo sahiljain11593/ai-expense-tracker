@@ -19,10 +19,10 @@ A smart expense tracking application that automatically categorizes transactions
 
 ### Installation
 
-1. **Clone the repository**
+1. **Clone the repository** (or [fork on GitHub](https://github.com/sahiljain11593/ai-expense-tracker/fork) first, then clone your fork)
    ```bash
-   git clone <your-repo-url>
-   cd expense-tracker
+   git clone https://github.com/sahiljain11593/ai-expense-tracker.git
+   cd ai-expense-tracker
    ```
 
 2. **Install dependencies**
@@ -135,6 +135,8 @@ streamlit run transaction_web_app.py
 5. Click "Deploy"
 
 #### Step 2: Configure Secrets (Settings → Secrets)
+
+Copy `streamlit.secrets.toml.example` to `.streamlit/secrets.toml` for local dev, or paste the same sections into Streamlit Cloud **Settings → Secrets**.
 
 **Gemini AI Translation** (Recommended default; free tier available):
 ```toml
