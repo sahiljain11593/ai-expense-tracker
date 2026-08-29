@@ -162,6 +162,9 @@ except Exception as _e:
     InteractiveFilters = None  # type: ignore
     ADVANCED_FEATURES_AVAILABLE = False
 
+from categorization_engine import apply_hybrid_categorization
+from statement_parsers import extract_rakuten_card_pdf
+
 from mobile_ui import (
     default_description_column_width,
     inject_mobile_styles,
@@ -405,14 +408,18 @@ def extract_transactions_from_pdf(
     translation_mode: str = "Free Fallback",
     api_key: str = None,
 ) -> pd.DataFrame:
-    """Extract transactions from a PDF statement using pdfplumber.
-
-    Assumes the PDF contains a table with columns Date, Description and
-    Amount.  This function looks for the largest table on the first few
-    pages.  It may need adaptation for your specific statement layout.
-    """
+    """Extract transactions from PDF statements (Rakuten card or English tables)."""
     if pdfplumber is None:
         raise RuntimeError("pdfplumber is not installed; please install it to process PDFs.")
+
+    if hasattr(file_stream, "seek"):
+        file_stream.seek(0)
+    rakuten_df = extract_rakuten_card_pdf(file_stream)
+    if rakuten_df is not None and not rakuten_df.empty:
+        return _apply_batch_translation(rakuten_df, translation_mode, api_key)
+
+    if hasattr(file_stream, "seek"):
+        file_stream.seek(0)
 
     transactions = []
     with pdfplumber.open(file_stream) as pdf:
@@ -420,7 +427,7 @@ def extract_transactions_from_pdf(
             tables = page.extract_tables()
             for table in tables:
                 if len(table) > 1 and len(table[0]) >= 3:
-                    header = [h.strip().lower() for h in table[0]]
+                    header = [(h or "").strip().lower() for h in table[0]]
                     try:
                         date_idx = header.index("date")
                         desc_idx = header.index("description")
@@ -428,23 +435,33 @@ def extract_transactions_from_pdf(
                     except ValueError:
                         continue
                     for row in table[1:]:
+                        if not row or date_idx >= len(row) or desc_idx >= len(row) or amt_idx >= len(row):
+                            continue
+                        date_cell = row[date_idx]
+                        desc_cell = row[desc_idx]
+                        amt_cell = row[amt_idx]
+                        if date_cell is None or desc_cell is None or amt_cell is None:
+                            continue
                         try:
-                            date = datetime.strptime(row[date_idx].strip(), "%d/%m/%Y")
+                            date = datetime.strptime(str(date_cell).strip(), "%d/%m/%Y")
                         except Exception:
                             try:
-                                date = datetime.strptime(row[date_idx].strip(), "%Y-%m-%d")
+                                date = datetime.strptime(str(date_cell).strip(), "%Y-%m-%d")
                             except Exception:
                                 continue
-                        description = row[desc_idx].strip()
+                        description = str(desc_cell).strip()
                         try:
-                            amount = float(row[amt_idx].replace(",", ""))
+                            amount = float(str(amt_cell).replace(",", ""))
                         except Exception:
                             continue
                         transactions.append({"date": date, "description": description, "amount": amount})
             if transactions:
                 break
     if not transactions:
-        raise RuntimeError("No transaction table detected in the uploaded PDF.")
+        raise RuntimeError(
+            "No transaction table detected in the uploaded PDF. "
+            "For Rakuten card statements, ensure the ご利用明細 section is present."
+        )
     df = pd.DataFrame(transactions)
     df = _apply_batch_translation(df, translation_mode, api_key)
     return df
@@ -1237,61 +1254,23 @@ def categorise_transactions_ai(
     return df_result
 
 
-def apply_smart_categorization(df: pd.DataFrame, learning_system, 
-                              rules, subcategories) -> pd.DataFrame:
-    """Apply smart categorization using the learning system."""
-    
-    df = df.copy()
-    categories = []
-    subcategories_list = []
-    confidences = []
-    prediction_breakdowns = []
-    
-    for idx, row in df.iterrows():
-        # Prepare transaction data for prediction
-        transaction_data = {
-            'description': row.get('description', ''),
-            'original_description': row.get('original_description', ''),
-            'amount': row.get('amount', 0),
-            'date': row.get('date'),
-            'transaction_type': row.get('transaction_type', 'Expense')
-        }
-        
-        # Get smart prediction
-        try:
-            if learning_system:
-                predicted_category, confidence, breakdown = learning_system.predict_category(transaction_data)
-            else:
-                predicted_category = "Uncategorised"
-                confidence = 0.0
-                breakdown = {'method': 'fallback', 'confidence': 0.0}
-        except Exception as e:
-            # Fallback to basic categorization if learning system fails
-            predicted_category = "Uncategorised"
-            confidence = 0.0
-            breakdown = {'method': 'fallback', 'confidence': 0.0, 'error': str(e)}
-        
-        # Apply subcategory if available
-        predicted_subcategory = ""
-        if predicted_category in subcategories:
-            # Find best matching subcategory
-            for sub_cat, keywords in subcategories[predicted_category].items():
-                if any(keyword.lower() in str(transaction_data['description']).lower() 
-                       for keyword in keywords):
-                    predicted_subcategory = sub_cat
-                    break
-        
-        categories.append(predicted_category)
-        subcategories_list.append(predicted_subcategory)
-        confidences.append(confidence)
-        prediction_breakdowns.append(breakdown)
-    
-    df['category'] = categories
-    df['subcategory'] = subcategories_list
-    df['confidence'] = confidences
-    df['prediction_breakdown'] = prediction_breakdowns
-    
-    return df
+def apply_smart_categorization(
+    df: pd.DataFrame,
+    learning_system,
+    rules,
+    subcategories,
+    ensemble_engine=None,
+    historical_data=None,
+) -> pd.DataFrame:
+    """Apply rules → merchant learning → optional ensemble ML."""
+    return apply_hybrid_categorization(
+        df,
+        learning_system,
+        rules,
+        subcategories,
+        ensemble_engine=ensemble_engine,
+        historical_data=historical_data,
+    )
 
 
 def save_custom_rules(rules, filename: str = "custom_rules.json") -> None:
@@ -2197,11 +2176,26 @@ def main() -> None:
         df = detect_transaction_type(df)
         
         # Apply categorization with smart learning if available
+        ensemble_engine = None
+        historical_data = None
+        if ADVANCED_FEATURES_AVAILABLE:
+            ensemble_engine = st.session_state.get("ensemble_engine")
+            if load_all_transactions is not None:
+                try:
+                    historical_data = load_all_transactions() or []
+                except Exception:
+                    historical_data = []
+
         if learning_system:
-            # Use smart learning system for predictions
-            df_cat = apply_smart_categorization(df, learning_system, rules, subcategories)
+            df_cat = apply_smart_categorization(
+                df,
+                learning_system,
+                rules,
+                subcategories,
+                ensemble_engine=ensemble_engine,
+                historical_data=historical_data,
+            )
         else:
-            # Fallback to basic categorization
             df_cat = categorise_transactions(df, rules, subcategories)
         
         # Close the loading spinner and show completion status

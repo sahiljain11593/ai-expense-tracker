@@ -9,15 +9,14 @@ See README for install/run. Key commands: `python3 -m pytest`, `streamlit run tr
 ```bash
 cd /workspace
 git fetch origin
-git checkout cursor/stabilize-gemini-roadmap-755d
-python3 -m pytest -q          # must be 87 passed
-python3 -m py_compile transaction_web_app.py data_store.py services/translation.py services/merchants.py
+git checkout main
+python3 -m pytest -q          # must be 92+ passed
+python3 -m py_compile transaction_web_app.py data_store.py services/translation.py services/merchants.py categorization_engine.py statement_parsers.py
 ```
 
 ### Current branch
 
-`cursor/stabilize-gemini-roadmap-755d` — open PR #12 on GitHub.
-All work for this session lives here. Merge to `main` to deploy to Streamlit Cloud.
+`main` — includes Gemini roadmap (Jun 22) and Rakuten PDF + hybrid categorization.
 
 ### What was completed (session Jun 22 2026)
 
@@ -36,6 +35,8 @@ All work for this session lives here. Merge to `main` to deploy to Streamlit Clo
 | Persist provider preference | ✅ `settings` DB table, restored on reload |
 | Module split | ✅ `services/translation.py` extracted (4103 → 3618 line main file) |
 | Auto Drive backup | ✅ Triggers after every `insert_transactions` when Drive is authorized |
+| Rakuten card PDF parsing | ✅ `statement_parsers.py` — ご利用明細 text layout |
+| Hybrid categorization | ✅ `categorization_engine.py` — rules → learning → ensemble ML |
 | P0 correctness fixes | ✅ Insights category bug, positive-expense analytics, contextual learning |
 
 ### What is next (from ROADMAP.md)
@@ -67,6 +68,9 @@ Step 2   AI provider call                          only truly new text         ~
 | `insights_engine.py` | Financial analytics engine |
 | `dashboard.py` | Plotly visualizations |
 | `mobile_ui.py` | Compact layout helpers |
+| `statement_parsers.py` | Rakuten card PDF text parser |
+| `categorization_engine.py` | Hybrid categorization (rules → learning → ensemble) |
+| `categorization_config.py` | Default keyword rules and subcategories |
 | `ROADMAP.md` | Source of truth for what is done and what is next |
 
 ### Running the smoke test (requires API key)
@@ -92,6 +96,8 @@ api_key = "..."
 - `services/merchants.py` uses NFKC normalization — half-width katakana from CC statements is converted to full-width before lookup.
 - Short ASCII-only keys (< 4 chars, e.g. `au`, `AWS`) are excluded from substring matching to prevent false positives.
 - `user_merchant_library.source = 'user'` is never overwritten by auto-learn updates.
+- **Rakuten card PDFs:** `extract_transactions_from_pdf` tries `extract_rakuten_card_pdf` first, then English table headers.
+- **Categorization:** `apply_hybrid_categorization()` runs rules → merchant learning DB → optional ensemble ML.
 - Sidebar starts **collapsed** so the main workflow is visible first on mobile.
 
 ### Mobile browser testing
